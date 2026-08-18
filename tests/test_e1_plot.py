@@ -1,7 +1,14 @@
 import pandas as pd
 import pytest
 
-from figures.e1_plot import missing_cells, plot_sweep, plotted_series
+from figures.e1_plot import (
+    ANALYTIC_SHARE_COLUMN,
+    PANELS,
+    missing_cells,
+    plot_sweep,
+    plotted_series,
+    with_analytic_share,
+)
 
 BASE_ROW = {
     "model": "deit_s",
@@ -126,3 +133,64 @@ def test_renders_when_nothing_succeeded(tmp_path):
 
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+# --- analytic 비중 패널 -------------------------------------------------------
+
+
+def test_analytic_share_is_the_formula_filled_fraction():
+    df = _frame([
+        _row(model="vim_s", flops_traced=4.0e9, flops_analytic=1.0e9, flops_total=5.0e9),
+    ])
+    shares = with_analytic_share(df)[ANALYTIC_SHARE_COLUMN]
+    assert shares.iloc[0] == pytest.approx(0.2)
+
+
+def test_fully_measured_models_get_a_zero_share_not_a_blank():
+    """DeiT·CMT는 0이어야 한다. 빈칸이면 '측정 실패'와 구분되지 않는다."""
+    df = _frame([_row(flops_traced=4.6e9, flops_analytic=0, flops_total=4.6e9)])
+    shares = with_analytic_share(df)[ANALYTIC_SHARE_COLUMN]
+    assert shares.iloc[0] == 0.0
+    assert shares.notna().all()
+
+
+def test_share_is_undefined_rather_than_zero_when_flops_are_missing():
+    """FLOPs를 못 잰 셀의 비중은 0이 아니라 '알 수 없음'이다.
+
+    0으로 채우면 '전부 측정된 모델'과 똑같이 보인다 — 측정 실패를 0으로 그리지
+    않는다는 이 그림의 원칙과 정면으로 어긋난다.
+    """
+    df = _frame([_row(status="oom", flops_traced=None, flops_analytic=None,
+                      flops_total=None, **UNMEASURED)])
+    shares = with_analytic_share(df)[ANALYTIC_SHARE_COLUMN]
+    assert shares.isna().all()
+
+
+def test_missing_analytic_column_fails_loudly():
+    """열 자체가 없으면 스키마가 어긋난 것이다. 빈 패널로 넘어가면 안 된다."""
+    df = _frame([_row()]).drop(columns=["flops_analytic"])
+    with pytest.raises(ValueError, match="flops_analytic"):
+        with_analytic_share(df)
+
+
+def test_analytic_share_panel_is_linear_not_log():
+    """log 축은 0을 그리지 못한다.
+
+    DeiT·CMT의 비중이 정확히 0이므로, 이 패널이 log면 '전부 측정값'이라는 사실이
+    그림에서 사라진다. 다른 패널은 자릿수가 커서 log가 맞다.
+    """
+    panels = {column: yscale for column, _, _, _, yscale in PANELS}
+    assert panels[ANALYTIC_SHARE_COLUMN] == "linear"
+    assert panels["flops_total"] == "log"
+
+
+def test_analytic_share_panel_is_drawn(tmp_path):
+    csv = tmp_path / "sweep.csv"
+    _frame([
+        _row(model="deit_s", flops_traced=4.6e9, flops_analytic=0, flops_total=4.6e9),
+        _row(model="vim_s", flops_traced=4.2e9, flops_analytic=1.5e9, flops_total=5.7e9),
+    ]).to_csv(csv, index=False)
+
+    out = plot_sweep(csv, tmp_path / "e1.png")
+
+    assert out.exists()

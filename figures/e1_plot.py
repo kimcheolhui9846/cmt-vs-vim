@@ -11,11 +11,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+ANALYTIC_SHARE_COLUMN = "flops_analytic_share"
+
+# (열, 제목, 나눌 값, 단위, y축). y축을 패널마다 선언하는 이유는 analytic 비중이
+# 정확히 0인 모델(DeiT·CMT)이 있기 때문이다 — log 축은 0을 그리지 못해서, 그 패널만
+# log로 두면 "이 모델은 전부 측정값"이라는 사실이 그림에서 사라진다.
 PANELS = [
-    ("flops_total", "FLOPs", 1e9, "GFLOPs"),
-    ("latency_ms", "Latency", 1.0, "ms"),
-    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB"),
-    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB"),
+    ("flops_total", "FLOPs", 1e9, "GFLOPs", "log"),
+    ("latency_ms", "Latency", 1.0, "ms", "log"),
+    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB", "log"),
+    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB", "log"),
+    (ANALYTIC_SHARE_COLUMN, "Analytic share of FLOPs", 0.01, "%", "linear"),
 ]
 
 # 측정되지 않은 셀은 색과 문구로 이유를 말한다. 0으로 그리지 않는다.
@@ -24,6 +30,28 @@ MISSING_STATUSES = {
     "error": ("tab:orange", "ERROR"),
     "no_cuda": ("tab:gray", "no CUDA"),
 }
+
+
+def with_analytic_share(df: pd.DataFrame) -> pd.DataFrame:
+    """FLOPs 중 공식으로 채운 비중을 열로 덧붙인다.
+
+    Vim의 FLOPs는 절반 가까이가 fused op 핸들러가 공식으로 채운 값이다. 합계만
+    그리면 그 사실이 그림에서 보이지 않으므로 비중을 따로 드러낸다. DeiT·CMT는
+    0이 나오고, 그 0이 "이 값은 전부 fvcore가 직접 센 것"이라는 뜻이다.
+
+    FLOPs를 못 잰 셀은 0이 아니라 NaN이다. 0으로 채우면 전부 측정된 모델과
+    똑같아 보이는데, 측정 실패를 0으로 그리지 않는다는 이 그림의 원칙에 어긋난다.
+    """
+    missing = [c for c in ("flops_analytic", "flops_total") if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"{', '.join(missing)} 열이 없다 — 이 열이 생기기 전에 만들어진 CSV다. "
+            "sweep을 다시 돌릴 것."
+        )
+
+    total = pd.to_numeric(df["flops_total"], errors="coerce")
+    analytic = pd.to_numeric(df["flops_analytic"], errors="coerce")
+    return df.assign(**{ANALYTIC_SHARE_COLUMN: analytic / total.where(total > 0)})
 
 
 def plotted_series(df: pd.DataFrame, column: str) -> dict[str, list[tuple[int, float]]]:
@@ -60,11 +88,13 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
     if df.empty:
         raise ValueError(f"{csv_path}가 비어 있다 — 먼저 sweep을 실행할 것")
 
+    df = with_analytic_share(df)
+
     out_path = Path(out_path)
     fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
     unmeasured = missing_cells(df)
 
-    for ax, (column, title, scale, unit) in zip(axes, PANELS):
+    for ax, (column, title, scale, unit, yscale) in zip(axes, PANELS):
         series = plotted_series(df, column)
 
         for model, points in series.items():
@@ -82,7 +112,7 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
         ax.set_title(title)
 
         if series:
-            ax.set_yscale("log")
+            ax.set_yscale(yscale)
             ax.legend()
         else:
             # 범례를 부르면 "No artists with labels" 경고가 난다.
