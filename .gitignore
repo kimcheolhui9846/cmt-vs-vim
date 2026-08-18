@@ -26,3 +26,8 @@ results/**/*.npz
 .DS_Store
 Thumbs.db
 .idea/
+
+# 테스트 출력 리다이렉트 잔재
+test_output.txt
+full_test_output.txt
+*_test_output.txt
