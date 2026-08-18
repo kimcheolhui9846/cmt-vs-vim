@@ -1878,7 +1878,7 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
         else:
             # 범례를 부르면 "No artists with labels" 경고가 난다.
             ax.text(
-                0.5, 0.5, "측정된 값 없음",
+                0.5, 0.5, "no values measured",
                 transform=ax.transAxes, ha="center", va="center",
             )
 
@@ -1922,6 +1922,8 @@ if __name__ == "__main__":
 
 Run: `pytest tests/test_e1_plot.py -v`
 Expected: PASS 7건, 경고 없음
+
+그림 안의 문자열은 전부 영어로 둔다. matplotlib 기본 폰트(DejaVu Sans)에 한글 글리프가 없어, 한글을 넣으면 PNG에 네모 상자로 찍힌다. 논문에 실릴 그림이라 그대로 둘 수 없고, 축·패널 제목과 OOM/ERROR 라벨이 이미 영어라 일관성도 그쪽이 맞다.
 
 `UserWarning: No artists with labels found to put in legend`가 뜨면 `if series:` 분기가 제대로 걸리지 않은 것이다.
 
