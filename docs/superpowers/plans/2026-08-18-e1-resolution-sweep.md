@@ -749,11 +749,13 @@ git commit -m "feat: put the three compared models behind one builder"
 - Consumes: `models.registry.build_model`
 - Produces: `build_model("cmt_s", ...)`가 동작. `models.cmt.load_cmt_small(pretrained, img_size) -> nn.Module`
 
+**가중치 로딩은 이 계획의 범위가 아니다.** E1은 FLOPs·latency·메모리만 재고 셋 다 가중치와 무관하다. 사전학습 체크포인트가 실제로 필요한 것은 ERF를 재는 E2와 dilution을 재는 E3이므로, 로딩과 상대 위치 bias 보간은 그 계획에서 구현한다. 여기서 미리 쓰면 어떤 테스트도 거치지 않는 추측성 코드가 된다. `pretrained=True`는 무엇을 해야 하는지 알려주는 `NotImplementedError`를 던진다.
+
 - [ ] **Step 1: 공식 구현 벤더링**
 
-`huawei-noah/Efficient-AI-Backbones`의 `cmt_pytorch/cmt.py`를 `models/cmt_official.py`로 복사한다. 라이선스 헤더를 지우지 않는다. 출처와 커밋 해시를 파일 상단 주석에 남긴다.
+`huawei-noah/Efficient-AI-Backbones`의 `cmt_pytorch/cmt.py`를 `models/cmt_official.py`로 복사한다. 라이선스 헤더(파일 상단 Huawei 저작권 주석)를 지우지 않는다. 출처 URL과 받은 날짜를 파일 상단에 덧붙인다.
 
-체크포인트는 저장소 Releases에서 CMT-Small을 받아 `checkpoints/cmt_small.pth`에 둔다. `.gitignore`가 이미 `checkpoints/`를 제외한다.
+체크포인트는 받지 않는다 — E1에 필요 없다.
 
 - [ ] **Step 2: 실패하는 테스트 작성**
 
@@ -779,11 +781,35 @@ def test_cmt_s_runs_at_224():
 
 
 def test_cmt_s_runs_at_384():
-    """상대 위치 bias가 해상도 변경 시 보간되어야 한다."""
+    """해상도 sweep의 전제. 384²가 안 되면 E1이 성립하지 않는다."""
     model = build_model("cmt_s", pretrained=False, img_size=384).eval()
     with torch.no_grad():
         out = model(torch.zeros(1, 3, 384, 384))
     assert out.shape == (1, 1000)
+
+
+def test_cmt_s_at_384_actually_rebuilds_the_stage_grids():
+    """출력 shape만 보면 img_size를 통째로 무시해도 통과한다 — 클래스 수는
+    해상도와 무관하기 때문이다. stage별 격자가 실제로 커졌는지 직접 확인한다."""
+    small = build_model("cmt_s", pretrained=False, img_size=224)
+    large = build_model("cmt_s", pretrained=False, img_size=384)
+
+    def first_stage_patches(model):
+        for module in model.modules():
+            if hasattr(module, "num_patches"):
+                return module.num_patches
+        raise AssertionError("num_patches를 가진 모듈이 없다 — 구조 가정이 틀렸다")
+
+    assert first_stage_patches(large) > first_stage_patches(small)
+
+
+def test_pretrained_weights_are_not_silently_skipped():
+    """가중치 로딩은 E2/E3 계획으로 미뤘다. 조용히 무시하면 나중에 무작위 초기화
+    모델로 ERF를 재고도 아무도 모른다."""
+    import pytest
+
+    with pytest.raises(NotImplementedError, match="E2"):
+        build_model("cmt_s", pretrained=True)
 ```
 
 - [ ] **Step 3: 테스트 실행 — 실패 확인**
@@ -797,47 +823,22 @@ Expected: FAIL — `NotImplementedError: 'cmt_s'은 이후 태스크에서 붙�
 # models/cmt.py
 """CMT-S 로더.
 
-공식 구현(models/cmt_official.py)을 감싸, 해상도를 바꿀 때 학습된 상대 위치
-bias를 bicubic으로 보간한다. CMT 논문이 명시한 fine-tuning 절차와 같다.
+E1은 FLOPs·latency·메모리만 재고 셋 다 가중치와 무관하므로, 여기서는 구조만
+세운다. 사전학습 가중치 로딩과 상대 위치 bias 보간은 그것이 실제로 필요한
+E2(ERF)·E3(dilution) 계획에서 구현한다.
 """
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.cmt_official import cmt_s as _cmt_s_official
 
-CHECKPOINT_PATH = "checkpoints/cmt_small.pth"
 
-
-def load_cmt_small(pretrained: bool = True, img_size: int = 224) -> nn.Module:
-    model = _cmt_s_official(img_size=img_size)
-    if not pretrained:
-        return model
-
-    state = torch.load(CHECKPOINT_PATH, map_location="cpu")
-    state = state.get("model", state)
-    state = _interpolate_relative_bias(state, model)
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        raise RuntimeError(f"체크포인트에 없는 키: {missing[:5]}")
-    return model
-
-
-def _interpolate_relative_bias(state: dict, model: nn.Module) -> dict:
-    """해상도가 바뀌면 상대 위치 bias의 격자 크기도 바뀐다."""
-    target = model.state_dict()
-    for key, value in list(state.items()):
-        if "relative_pos" not in key and "attn.B" not in key:
-            continue
-        if key not in target or value.shape == target[key].shape:
-            continue
-        state[key] = F.interpolate(
-            value.unsqueeze(0).unsqueeze(0).float(),
-            size=target[key].shape[-2:],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze(0).squeeze(0)
-    return state
+def load_cmt_small(pretrained: bool = False, img_size: int = 224) -> nn.Module:
+    if pretrained:
+        raise NotImplementedError(
+            "CMT-S 가중치 로딩은 아직 없다. E1은 구조 비용만 재므로 필요하지 않고, "
+            "로딩과 상대 위치 bias 보간은 E2/E3 계획에서 구현한다."
+        )
+    return _cmt_s_official(img_size=img_size)
 ```
 
 `models/registry.py`의 `build_model`에서 분기를 추가한다:
@@ -852,9 +853,11 @@ def _interpolate_relative_bias(state: dict, model: nn.Module) -> dict:
 - [ ] **Step 5: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_cmt.py -v`
-Expected: PASS 3건
+Expected: PASS 5건
 
-벤더링한 `cmt_official.py`가 `img_size` 인자를 받지 않으면 시그니처를 확인해 맞춘다. 공식 구현마다 인자명이 다를 수 있다.
+공식 소스는 확인해두었다. `cmt_s(pretrained=False, **kwargs)`가 존재하고 `CMT.__init__`이 `img_size`를 받으므로 위 호출이 그대로 동작한다. `embed_dims=[64,128,256,512]`, `depths=[3,3,16,3]`으로 논문 표 2의 CMT-S와 일치한다.
+
+import는 `timm.models.helpers` 등 timm 0.x 경로를 쓰지만 timm 1.0.28에서 deprecation shim으로 모두 동작한다(FutureWarning만 발생). **벤더링한 파일의 import를 손대지 않는다** — 고정 환경의 timm 0.9.12에서 원본 그대로 돌아가야 하고, 여기서 1.x 경로로 고쳐두면 그쪽이 깨진다.
 
 - [ ] **Step 6: 커밋**
 
