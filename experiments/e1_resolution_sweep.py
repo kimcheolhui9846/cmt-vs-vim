@@ -67,6 +67,17 @@ def _blank_row(model_name: str, resolution: int) -> dict:
     return row
 
 
+def _warm_up(model, shape: tuple[int, ...], device: str, iters: int = 3) -> None:
+    """측정 전에 한 번 돌려 일회성 할당을 끝내 둔다."""
+    model = model.to(device).eval()
+    x = torch.zeros(1, *shape, device=device)
+    with torch.no_grad():
+        for _ in range(iters):
+            model(x)
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+
+
 def _measure_one(model_name: str, resolution: int) -> dict:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     shape = (3, resolution, resolution)
@@ -101,6 +112,18 @@ def _measure_one(model_name: str, resolution: int) -> dict:
         row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
         row["flops_unexpected_ops"] = ";".join(flops.unexpected_uncounted_ops)
 
+    # 일회성 초기화(cuBLAS 워크스페이스·커널 로딩 등)를 기준선으로 밀어낸다.
+    # measure_latency의 워밍업은 reset_peak_memory_stats 뒤에 돌기 때문에, 이걸
+    # 하지 않으면 그 할당이 peak에 잡힌다. 프로세스에서 그 모델을 처음 돌리는
+    # 셀 하나만 부풀어(vim_s@224에서 0.347 GiB, 이후 셀은 0.117 GiB) 해상도가
+    # 오르는데 메모리는 줄어드는 불가능한 곡선이 나온다.
+    try:
+        _warm_up(model, shape, device)
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        # 여기서 OOM이면 아래 measure_peak_memory도 OOM이라 status="oom"으로 남는다
+
     # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
     # 1024²에서 150 iteration을 두 번 돌게 된다.
     captured: dict[str, float] = {}
@@ -117,7 +140,19 @@ def _measure_one(model_name: str, resolution: int) -> dict:
     if memory.status == "oom":
         return row
 
-    throughput = measure_throughput(model, shape, device=device)
+    # 배치 탐색 안의 OOM은 _fits가 잡지만, 탐색이 끝난 뒤 그 배치로 실제 측정할 때
+    # 단편화로 OOM이 날 수 있다. 그걸 흘려보내면 셀 전체가 error가 되면서 이미 잰
+    # FLOPs·latency·메모리까지 함께 사라진다 — 첫 실행에서 실제로 두 셀을 그렇게 잃었다.
+    try:
+        throughput = measure_throughput(model, shape, device=device)
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        row["error"] = f"throughput OOM: {exc}"
+        return row
+
     row["max_batch"] = throughput.batch
     row["images_per_sec"] = throughput.images_per_sec
     return row

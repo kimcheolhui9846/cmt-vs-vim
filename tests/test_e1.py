@@ -140,3 +140,26 @@ def test_env_json_records_the_memory_budget(tmp_path, monkeypatch):
 
     env = json.loads((tmp_path / "env.json").read_text())
     assert env["gpu_memory_budget_bytes"] == 1234
+
+
+def test_throughput_oom_keeps_what_was_already_measured(tmp_path, monkeypatch):
+    """처리량 단계의 OOM이 셀 전체를 지우면 안 된다.
+
+    배치 탐색 안의 OOM은 `_fits`가 잡지만, 탐색이 끝난 뒤 그 배치로 실제 측정할 때
+    단편화로 나는 OOM은 아무도 잡지 않았다. 그래서 첫 실행에서 cmt_s@512와
+    vim_s@512가 status="error"로 떨어지면서, 이미 잰 FLOPs·latency·메모리까지
+    전부 NaN이 됐다. OOM은 기록할 결과지 셀을 버릴 이유가 아니다.
+    """
+    def _oom(*args, **kwargs):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 1.19 GiB")
+
+    monkeypatch.setattr(e1, "measure_throughput", _oom)
+
+    df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+    row = df.iloc[0]
+
+    assert row["status"] != "error", "OOM이 셀 전체를 error로 만들었다"
+    assert row["flops_total"] > 0, "이미 잰 FLOPs가 사라졌다"
+    assert row["params"] > 0
+    assert pd.isna(row["max_batch"]), "재지 못한 처리량이 값처럼 남았다"
+    assert "out of memory" in str(row["error"])
