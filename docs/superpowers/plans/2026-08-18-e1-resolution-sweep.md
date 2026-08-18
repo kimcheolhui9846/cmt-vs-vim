@@ -1644,7 +1644,14 @@ git commit -m "test: check the harness against published FLOPs before trusting i
 
 **Interfaces:**
 - Consumes: `results/e1/sweep.csv`
-- Produces: `figures.e1_plot.plot_sweep(csv_path, out_path) -> Path` — 3단 그림(FLOPs / latency / peak VRAM 대 해상도) PNG
+- Produces:
+  - `figures.e1_plot.plot_sweep(csv_path, out_path) -> Path` — 4패널 PNG (FLOPs / latency / peak VRAM allocated / peak VRAM reserved 대 해상도)
+  - `figures.e1_plot.plotted_series(df, column) -> dict[str, list[tuple[int, float]]]` — 모델별로 실제로 선에 올라갈 (해상도, 값)
+  - `figures.e1_plot.missing_cells(df) -> list[tuple[int, str, str]]` — 측정되지 않은 셀 (해상도, 모델, 상태)
+
+**무엇을 그릴지 정하는 판단을 순수 함수로 뺀다.** 그래야 "OOM이 0으로 그려지는가"를 matplotlib 내부를 뒤지지 않고 직접 검증할 수 있다. 파일이 생겼는지만 보는 테스트는 그 회귀를 못 잡는다 — OOM을 0으로 그려도 PNG는 멀쩡히 만들어지기 때문이다.
+
+CSV의 `status`는 `"ok"`, `"oom"`, `"no_cuda"`, `"error"` 네 가지이며 **넷 다 그림에 드러낸다.** `"ok"`만 그리고 나머지를 빠뜨리면 측정에 실패한 셀과 아직 재지 않은 셀이 구분되지 않는다. 출처를 댈 수 없는 수치가 문제였던 논문에 "왜 비었는지 알 수 없는 빈칸"을 넣는 셈이다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1653,32 +1660,104 @@ git commit -m "test: check the harness against published FLOPs before trusting i
 import pandas as pd
 import pytest
 
-from figures.e1_plot import plot_sweep
+from figures.e1_plot import missing_cells, plot_sweep, plotted_series
+
+BASE_ROW = {
+    "model": "deit_s",
+    "resolution": 224,
+    "params": 22_000_000,
+    "flops_traced": 4.6e9,
+    "flops_uncounted_ops": "",
+    "latency_ms": 5.0,
+    "peak_allocated_bytes": 1_000_000,
+    "peak_reserved_bytes": 2_000_000,
+    "max_batch": 32,
+    "images_per_sec": 100.0,
+    "status": "ok",
+    "error": None,
+}
+
+UNMEASURED = {
+    "latency_ms": None,
+    "peak_allocated_bytes": None,
+    "peak_reserved_bytes": None,
+    "max_batch": None,
+    "images_per_sec": None,
+}
+
+
+def _row(**overrides):
+    row = dict(BASE_ROW)
+    row.update(overrides)
+    return row
+
+
+def _frame(rows):
+    return pd.DataFrame(rows)
 
 
 def _write_csv(path, rows):
-    pd.DataFrame(rows).to_csv(path, index=False)
+    _frame(rows).to_csv(path, index=False)
     return path
 
 
-def test_writes_a_png_from_the_csv(tmp_path):
-    csv = _write_csv(
-        tmp_path / "sweep.csv",
+def test_oom_cells_are_absent_from_the_series_not_zero():
+    """OOM을 0으로 그리면 '메모리를 안 썼다'로 읽혀 논문 주장이 뒤집힌다."""
+    df = _frame(
         [
-            {
-                "model": "deit_s",
-                "resolution": 224,
-                "params": 22_000_000,
-                "flops_traced": 4.6e9,
-                "flops_uncounted_ops": "",
-                "latency_ms": 5.0,
-                "peak_allocated_bytes": 1_000_000,
-                "peak_reserved_bytes": 2_000_000,
-                "status": "ok",
-            }
-        ],
+            _row(resolution=224),
+            _row(resolution=1024, status="oom", **UNMEASURED),
+        ]
     )
+
+    series = plotted_series(df, "peak_allocated_bytes")
+
+    assert series["deit_s"] == [(224, 1_000_000)]
+    assert all(resolution != 1024 for resolution, _ in series["deit_s"])
+
+
+def test_error_and_no_cuda_cells_are_also_absent_from_the_series():
+    df = _frame(
+        [
+            _row(resolution=512, status="error", error="RuntimeError: boom"),
+            _row(resolution=768, status="no_cuda", **UNMEASURED),
+        ]
+    )
+
+    assert plotted_series(df, "latency_ms") == {}
+
+
+def test_a_row_missing_only_one_column_does_not_poison_the_others():
+    """FLOPs는 OOM 셀에도 남는다. latency가 없다고 FLOPs까지 버리면 안 된다."""
+    df = _frame([_row(resolution=1024, status="oom", flops_traced=90e9, **UNMEASURED)])
+
+    assert plotted_series(df, "flops_traced") == {}
+    assert missing_cells(df) == [(1024, "deit_s", "oom")]
+
+
+def test_missing_cells_reports_every_unmeasured_status():
+    """실패한 측정과 아직 재지 않은 셀이 그림에서 같아 보이면 안 된다."""
+    df = _frame(
+        [
+            _row(resolution=224),
+            _row(resolution=512, status="error", error="RuntimeError: boom"),
+            _row(resolution=768, status="no_cuda", **UNMEASURED),
+            _row(resolution=1024, status="oom", **UNMEASURED),
+        ]
+    )
+
+    assert missing_cells(df) == [
+        (512, "deit_s", "error"),
+        (768, "deit_s", "no_cuda"),
+        (1024, "deit_s", "oom"),
+    ]
+
+
+def test_writes_a_png_from_the_csv(tmp_path):
+    csv = _write_csv(tmp_path / "sweep.csv", [_row()])
+
     out = plot_sweep(csv, tmp_path / "e1.png")
+
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -1686,30 +1765,23 @@ def test_writes_a_png_from_the_csv(tmp_path):
 def test_refuses_an_empty_csv(tmp_path):
     """빈 입력에서 조용히 빈 그림을 내면 논문에 빈 그림이 실린다."""
     csv = _write_csv(tmp_path / "sweep.csv", [])
+
     with pytest.raises(ValueError, match="비어"):
         plot_sweep(csv, tmp_path / "e1.png")
 
 
-def test_oom_rows_do_not_become_zero_points(tmp_path):
-    """OOM을 0으로 그리면 '메모리를 안 쓴다'로 읽힌다."""
+def test_renders_when_nothing_succeeded(tmp_path):
+    """전 해상도가 OOM인 모델도 그림이 나와야 한다. 성공 행이 하나도 없는
+    패널에서 축 범위 계산과 범례가 깨지기 쉽다."""
     csv = _write_csv(
         tmp_path / "sweep.csv",
-        [
-            {
-                "model": "deit_s",
-                "resolution": 1024,
-                "params": 22_000_000,
-                "flops_traced": None,
-                "flops_uncounted_ops": "",
-                "latency_ms": None,
-                "peak_allocated_bytes": None,
-                "peak_reserved_bytes": None,
-                "status": "oom",
-            }
-        ],
+        [_row(resolution=1024, status="oom", **UNMEASURED)],
     )
+
     out = plot_sweep(csv, tmp_path / "e1.png")
+
     assert out.exists()
+    assert out.stat().st_size > 0
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1721,7 +1793,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'figures.e1_plot'`
 
 ```python
 # figures/e1_plot.py
-"""E1 그림. CSV만 읽는다 — 손으로 넣은 숫자가 그림에 들어가지 않게."""
+"""E1 그림. CSV만 읽는다 — 손으로 넣은 숫자가 그림에 들어가지 않게.
+
+무엇을 그릴지 정하는 판단은 `plotted_series`와 `missing_cells`에 있다. 둘 다
+순수 함수라 matplotlib을 거치지 않고 직접 검증할 수 있다.
+"""
 from pathlib import Path
 
 import matplotlib
@@ -1737,6 +1813,38 @@ PANELS = [
     ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB"),
 ]
 
+# 측정되지 않은 셀은 색과 문구로 이유를 말한다. 0으로 그리지 않는다.
+MISSING_STATUSES = {
+    "oom": ("tab:red", "OOM"),
+    "error": ("tab:orange", "ERROR"),
+    "no_cuda": ("tab:gray", "no CUDA"),
+}
+
+
+def plotted_series(df: pd.DataFrame, column: str) -> dict[str, list[tuple[int, float]]]:
+    """모델별로 선에 올릴 (해상도, 값). status가 "ok"이고 값이 있는 셀만."""
+    series: dict[str, list[tuple[int, float]]] = {}
+
+    for model, group in df.groupby("model"):
+        usable = group[(group["status"] == "ok") & group[column].notna()]
+        points = [
+            (int(row.resolution), row[column])
+            for row in usable.sort_values("resolution").itertuples()
+        ]
+        if points:
+            series[str(model)] = points
+
+    return series
+
+
+def missing_cells(df: pd.DataFrame) -> list[tuple[int, str, str]]:
+    """측정되지 않은 셀 (해상도, 모델, 상태). 해상도 오름차순."""
+    unmeasured = df[df["status"].isin(MISSING_STATUSES)]
+    return [
+        (int(row.resolution), str(row.model), str(row.status))
+        for row in unmeasured.sort_values(["resolution", "model"]).itertuples()
+    ]
+
 
 def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
     df = pd.read_csv(csv_path)
@@ -1745,34 +1853,65 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
 
     out_path = Path(out_path)
     fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
+    unmeasured = missing_cells(df)
 
     for ax, (column, title, scale, unit) in zip(axes, PANELS):
-        for model, group in df.groupby("model"):
-            ok = group[group["status"] == "ok"].sort_values("resolution")
-            if not ok.empty:
-                ax.plot(
-                    ok["resolution"], ok[column] / scale, marker="o", label=model
-                )
-            # OOM은 0이 아니라 표식으로 남긴다.
-            for _, row in group[group["status"] == "oom"].iterrows():
-                ax.axvline(row["resolution"], linestyle=":", alpha=0.4)
-                ax.annotate(
-                    f"{row['model']} OOM",
-                    xy=(row["resolution"], ax.get_ylim()[1] * 0.5),
-                    rotation=90,
-                    fontsize=7,
-                    ha="right",
-                )
+        series = plotted_series(df, column)
+
+        for model, points in series.items():
+            ax.plot(
+                [resolution for resolution, _ in points],
+                [value / scale for _, value in points],
+                marker="o",
+                label=model,
+            )
+
+        _mark_unmeasured(ax, unmeasured)
+
         ax.set_xlabel("input resolution (px)")
         ax.set_ylabel(unit)
         ax.set_title(title)
-        ax.set_yscale("log")
-        ax.legend()
+
+        if series:
+            ax.set_yscale("log")
+            ax.legend()
+        else:
+            # 범례를 부르면 "No artists with labels" 경고가 난다.
+            ax.text(
+                0.5, 0.5, "측정된 값 없음",
+                transform=ax.transAxes, ha="center", va="center",
+            )
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
+
+
+def _mark_unmeasured(ax, unmeasured: list[tuple[int, str, str]]) -> None:
+    """같은 해상도에서 여러 모델이 실패해도 라벨이 겹치지 않게 쌓아 올린다.
+
+    y 위치를 axes fraction으로 잡아, 성공한 행이 하나도 없어 축 범위가
+    기본값인 패널에서도 라벨이 화면 안에 남는다.
+    """
+    seen_at: dict[int, int] = {}
+
+    for resolution, model, status in unmeasured:
+        color, label = MISSING_STATUSES[status]
+        offset = seen_at.get(resolution, 0)
+        seen_at[resolution] = offset + 1
+
+        ax.axvline(resolution, color=color, linestyle=":", alpha=0.6)
+        ax.annotate(
+            f"{model} {label}",
+            xy=(resolution, 0.95 - 0.09 * offset),
+            xycoords=("data", "axes fraction"),
+            rotation=90,
+            fontsize=7,
+            color=color,
+            ha="right",
+            va="top",
+        )
 
 
 if __name__ == "__main__":
@@ -1782,7 +1921,9 @@ if __name__ == "__main__":
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_e1_plot.py -v`
-Expected: PASS 3건
+Expected: PASS 7건, 경고 없음
+
+`UserWarning: No artists with labels found to put in legend`가 뜨면 `if series:` 분기가 제대로 걸리지 않은 것이다.
 
 - [ ] **Step 5: 커밋**
 
