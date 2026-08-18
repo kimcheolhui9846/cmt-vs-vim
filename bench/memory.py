@@ -12,7 +12,7 @@ class MemoryResult:
     status: str
 
 
-def _is_oom(exc: BaseException) -> bool:
+def is_oom(exc: BaseException) -> bool:
     """CUDA OOM이 오는 두 가지 형태를 모두 인정한다.
 
     `torch.cuda.OutOfMemoryError`가 표준 경로지만, cuDNN workspace 할당 실패
@@ -31,7 +31,7 @@ def measure_peak_memory(fn: Callable[[], object]) -> MemoryResult:
         try:
             fn()
         except RuntimeError as exc:
-            if not _is_oom(exc):
+            if not is_oom(exc):
                 raise
             return MemoryResult(None, None, "oom")
         return MemoryResult(None, None, "no_cuda")
@@ -42,7 +42,7 @@ def measure_peak_memory(fn: Callable[[], object]) -> MemoryResult:
     try:
         fn()
     except RuntimeError as exc:
-        if not _is_oom(exc):
+        if not is_oom(exc):
             raise
         torch.cuda.empty_cache()
         return MemoryResult(None, None, "oom")
