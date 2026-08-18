@@ -1686,13 +1686,66 @@ if __name__ == "__main__":
 Run: `pytest tests/test_e1_plot.py -v`
 Expected: PASS 3건
 
-- [ ] **Step 5: 전체 sweep 실행과 결과 커밋**
+- [ ] **Step 5: 커밋**
+
+```bash
+git add figures/__init__.py figures/e1_plot.py tests/test_e1_plot.py
+git commit -m "feat: plot the sweep from the CSV"
+```
+
+**실제 sweep은 여기서 돌리지 않는다.** 이 태스크가 내놓는 것은 그림을 그리는 코드이지 측정값이 아니다. 실측은 Task 13에서, 고정 환경에서 수행한다.
+
+---
+
+### Task 13: 고정 환경에서 실측 실행
+
+앞선 태스크들은 하네스를 만들었다. 이 태스크가 논문에 들어갈 숫자를 만든다.
+
+**선행 조건** (모두 충족되어야 시작한다):
+- Task 1의 스모크 테스트 통과 — WSL2에서 selective scan CUDA 커널이 실제로 돈다
+- Task 8 완료 — `build_model("vim_s")`가 동작하고 FLOPs 핸들러가 등록되어 있다
+- Task 11의 sanity check 통과 — DeiT-S 224² FLOPs가 공개값 4.6G의 ±5% 이내
+
+**Files:**
+- Create: `results/e1/sweep.csv`, `results/e1/env.json`, `results/e1/e1_sweep.png`
+
+**Interfaces:**
+- Consumes: `experiments.e1_resolution_sweep.run_sweep`, `figures.e1_plot.plot_sweep`
+- Produces: 논문 표 1을 대체할 실측 데이터
+
+- [ ] **Step 1: 고정 환경에서 전체 테스트 재확인**
+
+Run: `pytest tests/ -v`
+
+Windows(Python 3.12 / torch 2.6)에서 개발한 하네스가 고정 환경(Python 3.10.13 / torch 2.1.1+cu118)에서도 같게 동작하는지 확인한다. 결과가 다르면 실측 전에 원인을 밝힌다 — 하네스가 환경에 따라 다르게 굴면 그 하네스로 잰 숫자는 못 쓴다.
+
+- [ ] **Step 2: sweep 실행**
 
 ```bash
 python -m experiments.e1_resolution_sweep
+```
+
+3 모델 × 5 해상도 = 15셀. 배치 탐색이 매 셀에서 OOM까지 올려보므로 한 시간 규모를 예상한다. 실행 중 GPU를 다른 용도로 쓰지 않는다 — latency와 peak memory가 오염된다.
+
+- [ ] **Step 3: 결과의 정직성 확인**
+
+`results/e1/sweep.csv`를 열어 다음을 확인한다. 하나라도 어긋나면 숫자를 쓰지 않는다.
+
+- `flops_uncounted_ops` 열이 **모든 행에서 비어 있는가.** 비어 있지 않다면 그 행의 FLOPs는 과소 계상된 값이다. 특히 `vim_s` 행을 확인한다 — selective scan이 빠지면 Vim이 실제보다 훨씬 효율적으로 보인다.
+- `env.json`의 torch·CUDA·GPU가 고정 환경과 일치하는가.
+- OOM 행이 `status == "oom"`으로 남아 있는가. 사라졌다면 기록이 아니라 소실이다.
+
+- [ ] **Step 4: 그림 생성**
+
+```bash
 python -m figures.e1_plot
-git add results/e1/ figures/__init__.py figures/e1_plot.py tests/test_e1_plot.py
-git commit -m "feat: plot the sweep from the CSV and record the first measurements"
+```
+
+- [ ] **Step 5: 결과 커밋**
+
+```bash
+git add results/e1/
+git commit -m "measure: record the resolution sweep the paper's Table 1 estimated"
 ```
 
 이 시점에서 `results/e1/sweep.csv`가 논문 표 1을 대체할 실측 데이터다.
