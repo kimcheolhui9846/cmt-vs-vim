@@ -1,0 +1,56 @@
+# 고정 실행 환경. results/ 에 커밋되는 모든 측정값은 이 조합에서 나와야 한다.
+#   Python 3.10.13 / WSL2 Ubuntu / CUDA 11.8 / RTX 3070 Ti (sm_86)
+# 개발과 단위 테스트는 다른 환경에서 해도 되지만, 그 환경에서 나온 수치는 커밋하지 않는다.
+
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.1+cu118
+torchvision==0.16.1+cu118
+
+timm==0.9.12
+fvcore==0.1.5.post20221221
+einops==0.7.0
+matplotlib==3.8.2
+pandas==2.1.4
+pytest==7.4.4
+
+# torch 2.1.1 의 cpp_extension 이 pkg_resources 를 import 한다. setuptools 81+ 에서
+# 제거된 API라 최신 setuptools 를 쓰면 CUDA 확장 빌드가 metadata 생성 단계에서 죽는다.
+setuptools==69.5.1
+wheel==0.43.0
+
+# mamba-1p1p1 이 끌어오는 의존성이지만 버전을 여기서 고정해야 한다. 최신 transformers 는
+# GreedySearchDecoderOnlyOutput 를 없앴고, 그러면 import mamba_ssm 자체가 실패한다.
+# hustvl/Vim 의 vim_requirements.txt 와 같은 핀이다.
+transformers==4.35.2
+
+# ---------------------------------------------------------------------------
+# selective scan 커널은 pip 로 여기서 걸 수 없다. 아래 순서를 그대로 따를 것.
+#
+# 1) CUDA 11.8 툴체인. 배포판 gcc 를 쓰면 안 된다 — CUDA 11.8 의 헤더는 glibc 2.41+
+#    (Ubuntu 26.04 는 2.43)와 충돌해 cospi/sinpi/rsqrt 의 exception specification 이
+#    어긋나고 .cu 컴파일이 전부 깨진다. conda 의 gcc-11 + sysroot 2.17 을 host
+#    compiler 로 지정해 시스템 glibc 헤더를 피한다.
+#
+#      conda install -n <env> -c nvidia/label/cuda-11.8.0 cuda-toolkit
+#      conda install -n <env> -c conda-forge gcc_linux-64=11.4 gxx_linux-64=11.4 \
+#                                            sysroot_linux-64=2.17
+#      export CUDA_HOME=<env>
+#      export CC=<env>/bin/x86_64-conda-linux-gnu-gcc
+#      export CXX=<env>/bin/x86_64-conda-linux-gnu-g++
+#      export NVCC_PREPEND_FLAGS="-ccbin $CXX"
+#      export TORCH_CUDA_ARCH_LIST="8.6"   # 측정 머신이 RTX 3070 Ti 하나뿐이다
+#
+# 2) causal_conv1d 1.1.0. PyPI sdist(6.6 kB)에는 csrc/ 가 없어 빌드가 불가능하다.
+#    반드시 소스 트리에서 빌드한다.
+#
+#      git clone --depth 1 --branch v1.1.0 \
+#          https://github.com/Dao-AILab/causal-conv1d.git
+#      pip install --no-build-isolation ./causal-conv1d
+#
+# 3) mamba-1p1p1 — 정식 mamba-ssm 이 아니라 Vim 의 포크여야 한다. 정식 1.1.1 의
+#    Mamba 는 bimamba_type 인자를 받지 않아 models/vim_official.py 가 죽는다.
+#    스모크 테스트가 import 하는 selective_scan_fn 은 양쪽 모두에 있어서 이 차이를
+#    잡아주지 못한다.
+#
+#      git clone --depth 1 https://github.com/hustvl/Vim.git
+#      pip install --no-build-isolation -e ./Vim/mamba-1p1p1
