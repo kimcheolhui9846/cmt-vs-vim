@@ -1048,11 +1048,15 @@ git commit -m "feat: load Vim-S and stop fvcore from counting selective scan as 
 - Test: `tests/test_throughput.py`
 
 **Interfaces:**
-- Consumes: `bench.memory.measure_peak_memory`
+- Consumes: `bench.memory.is_oom`
 - Produces:
   - `bench.throughput.find_max_batch(model, input_shape, device="cuda", limit=512) -> int` — 들어가는 최대 배치. 1도 안 들어가면 `0`
   - `bench.throughput.measure_throughput(model, input_shape, device="cuda", limit=512) -> ThroughputResult`
   - `ThroughputResult`는 `batch: int`, `images_per_sec: float | None` 필드를 가진 dataclass
+
+- [ ] **Step 0: `_is_oom`을 공개 이름으로 승격**
+
+`bench/memory.py`의 `_is_oom`을 `is_oom`으로 이름만 바꾼다(호출부도 함께). 배치 탐색은 일부러 OOM을 유발하는 코드라 같은 판정이 필요한데, 두 모듈이 각자 다른 기준을 쓰면 메모리 측정에서는 OOM으로 기록되는 상황이 배치 탐색에서는 예외로 터진다. `tests/test_memory.py`는 `measure_peak_memory`를 통해서만 검증하므로 이 이름 변경에 영향받지 않는다. 변경 후 `pytest tests/test_memory.py -v`가 여전히 6건 통과하는지 확인한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1105,6 +1109,40 @@ def test_throughput_is_none_when_nothing_fits():
     result = measure_throughput(FitsUpTo(0), input_shape=(4,), device="cpu")
     assert result.batch == 0
     assert result.images_per_sec is None
+
+
+class RaisesOomWordedRuntimeError(nn.Module):
+    """OOM이 평범한 RuntimeError로 새는 형태. bench.memory와 판정이 일치해야 한다."""
+
+    def __init__(self, threshold: int):
+        super().__init__()
+        self.threshold = threshold
+        self.fc = nn.Linear(4, 4)
+
+    def forward(self, x):
+        if x.shape[0] > self.threshold:
+            raise RuntimeError("CUDA error: out of memory allocating workspace")
+        return self.fc(x)
+
+
+def test_batch_search_treats_oom_worded_runtime_error_as_not_fitting():
+    """배치 탐색은 일부러 OOM을 유발한다. 여기서 판정이 좁으면 탐색이 죽는다."""
+    assert find_max_batch(
+        RaisesOomWordedRuntimeError(6), input_shape=(4,), device="cpu"
+    ) == 6
+
+
+class HasABug(nn.Module):
+    def forward(self, x):
+        raise RuntimeError("shape '[2, 3]' is invalid for input of size 7")
+
+
+def test_batch_search_does_not_swallow_unrelated_runtime_errors():
+    """진짜 버그를 '안 들어감'으로 처리하면 max_batch가 조용히 0이 된다."""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="invalid for input"):
+        find_max_batch(HasABug(), input_shape=(4,), device="cpu")
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1128,6 +1166,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+from bench.memory import is_oom
+
 
 @dataclass(frozen=True)
 class ThroughputResult:
@@ -1136,10 +1176,14 @@ class ThroughputResult:
 
 
 def _fits(model: nn.Module, input_shape: tuple[int, ...], batch: int, device: str) -> bool:
+    """`bench.memory`와 같은 OOM 판정을 쓴다. 두 모듈이 기준을 달리하면,
+    메모리 측정에서는 oom으로 기록되는 상황이 배치 탐색에서는 예외로 터진다."""
     try:
         with torch.no_grad():
             model(torch.zeros(batch, *input_shape, device=device))
-    except torch.cuda.OutOfMemoryError:
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
         return False
@@ -1210,8 +1254,8 @@ def measure_throughput(
 
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
-Run: `pytest tests/test_throughput.py -v`
-Expected: PASS 6건
+Run: `pytest tests/test_throughput.py tests/test_memory.py -v`
+Expected: PASS 14건 (throughput 8건 + memory 6건). memory 쪽은 Step 0의 이름 변경이 기존 동작을 깨지 않았음을 확인하는 것이다.
 
 - [ ] **Step 5: 커밋**
 
