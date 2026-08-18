@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 체크포인트와 데이터셋 — 용량이 커서 추적하지 않는다
+checkpoints/
+data/
+*.pth
+*.pt
+*.safetensors
+
+# 학습 로그
+runs/
+wandb/
+*.log
+
+# results/ 의 원시 측정값은 재현성을 위해 커밋한다.
+# 다만 중간 산출 텐서 덤프는 제외한다.
+results/**/*.npy
+results/**/*.npz
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.idea/
