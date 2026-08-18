@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- Python 3.10.13, torch 2.1.1+cu118, `causal_conv1d>=1.1.0`, `mamba-1p1p1` — 버전 고정. Vim 커널이 버전에 민감하다.
-- WSL2에서 실행한다. Vision Mamba의 selective scan CUDA 커널이 Linux를 요구한다.
+- **실측 실행 환경(고정)**: Python 3.10.13, torch 2.1.1+cu118, `causal_conv1d>=1.1.0`, `mamba-1p1p1`, WSL2. `results/`에 커밋되는 모든 수치는 이 환경에서 나와야 한다. Vim 커널이 버전에 민감하고, selective scan이 Linux를 요구한다.
+- **개발·단위테스트 환경(무관)**: `bench/`와 `figures/`의 단위 테스트는 토이 모델과 CPU만 쓰므로 버전에 의존하지 않는다. WSL2 준비 전까지 Windows(Python 3.12, torch 2.6)에서 개발·검증해도 되지만, **그 환경에서 나온 측정값을 `results/`에 커밋하지 않는다.** Task 1의 스모크 테스트가 고정 환경 진입 관문이며, 통과 후 전체 테스트를 고정 환경에서 한 번 더 돌린다.
 - 순수 PyTorch selective scan 대체 금지. 5~10배 느려져 latency 측정이 무의미해진다.
 - 정밀도는 **fp32 고정**. AMP는 부록 전용이며 본 실험에서 섞지 않는다.
 - latency는 **batch=1, 워밍업 50회 후 100회 측정의 중앙값**.
