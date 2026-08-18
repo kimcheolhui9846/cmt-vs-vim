@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from bench.budget import apply_memory_budget
 from bench.env import snapshot
 from bench.flops import count_flops
 from bench.latency import measure_latency
@@ -137,7 +138,13 @@ def run_sweep(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "sweep.csv"
-    (out_dir / "env.json").write_text(json.dumps(snapshot(), indent=2))
+
+    # 예산을 먼저 건다. 이걸 안 걸면 WSL2가 VRAM 부족을 OOM으로 알리지 않고 시스템
+    # 메모리로 넘겨서, OOM 경계도 처리량도 물리 VRAM과 무관한 값이 된다.
+    budget = apply_memory_budget()
+    env = snapshot()
+    env["gpu_memory_budget_bytes"] = budget
+    (out_dir / "env.json").write_text(json.dumps(env, indent=2))
 
     rows: list[dict] = []
     for name in model_names:

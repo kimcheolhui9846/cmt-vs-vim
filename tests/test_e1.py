@@ -122,3 +122,21 @@ def test_flops_survive_an_oom_row(tmp_path, monkeypatch):
     assert df.iloc[0]["status"] == "oom"
     assert df.iloc[0]["flops_total"] > 0
     assert df.iloc[0]["params"] > 0
+
+
+def test_env_json_records_the_memory_budget(tmp_path, monkeypatch):
+    """어떤 예산에서 잰 OOM인지 기록되지 않으면 결과를 해석할 수 없다.
+
+    WSL2는 VRAM이 모자라면 시스템 메모리로 넘겨서 OOM을 내지 않는다. 그래서 이
+    sweep의 OOM 경계는 "8GB"가 아니라 "할당자에 건 예산"의 경계다. 그 값이 결과
+    파일에 없으면 재현도, 해석도 불가능하다.
+    """
+    import json
+
+    monkeypatch.setattr(e1, "_measure_one", _stub_row)
+    monkeypatch.setattr(e1, "apply_memory_budget", lambda: 1234)
+
+    run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
+    env = json.loads((tmp_path / "env.json").read_text())
+    assert env["gpu_memory_budget_bytes"] == 1234
