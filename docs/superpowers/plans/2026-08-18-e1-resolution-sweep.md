@@ -477,8 +477,11 @@ git commit -m "feat: time inference with CUDA events instead of the wall clock"
 **Interfaces:**
 - Consumes: 없음
 - Produces: `bench.memory.measure_peak_memory(fn) -> MemoryResult`
-  - `MemoryResult`는 `peak_bytes: int | None`, `status: str` 필드를 가진 dataclass
+  - `MemoryResult`는 `peak_allocated_bytes: int | None`, `peak_reserved_bytes: int | None`, `status: str` 필드를 가진 dataclass
   - `status`는 `"ok"`, `"oom"`, `"no_cuda"` 중 하나
+  - `bench.memory._is_oom(exc) -> bool`
+
+두 통계를 모두 기록한다. `max_memory_allocated`는 텐서 수요량이라 재현성이 높고 논문에서 흔히 쓰는 값이며, `max_memory_reserved`는 캐싱 얼로케이터가 실제 잡은 VRAM이라 8GB 한계선과 직결된다. 비용이 사실상 0이므로 둘 다 남기고 논문에서 어느 쪽을 인용할지는 나중에 정한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -496,7 +499,30 @@ def test_oom_is_recorded_as_data_not_raised():
 
     result = measure_peak_memory(blows_up)
     assert result.status == "oom"
-    assert result.peak_bytes is None
+    assert result.peak_allocated_bytes is None
+    assert result.peak_reserved_bytes is None
+
+
+def test_runtime_error_worded_as_oom_is_also_recorded_as_oom():
+    """CUDA OOM은 OutOfMemoryError로만 오지 않는다. cuDNN 실패 등에서는 메시지에
+    'out of memory'가 든 평범한 RuntimeError로 샌다. 이걸 놓치면 sweep이
+    고해상도 셀에서 통째로 죽는데, 하필 거기가 논문 주장이 걸린 자리다."""
+
+    def blows_up():
+        raise RuntimeError("CUDA error: out of memory when allocating workspace")
+
+    result = measure_peak_memory(blows_up)
+    assert result.status == "oom"
+
+
+def test_unrelated_runtime_error_still_propagates():
+    """RuntimeError를 전부 삼키면 진짜 버그가 가짜 메모리 한계로 논문에 실린다."""
+
+    def has_a_bug():
+        raise RuntimeError("shape '[2, 3]' is invalid for input of size 7")
+
+    with pytest.raises(RuntimeError, match="invalid for input"):
+        measure_peak_memory(has_a_bug)
 
 
 def test_other_exceptions_still_propagate():
@@ -509,14 +535,25 @@ def test_other_exceptions_still_propagate():
         measure_peak_memory(has_a_bug)
 
 
+def test_no_cuda_is_reported_distinctly_from_oom(monkeypatch):
+    """세 상태 중 하나가 커버리지 0으로 나가면 안 된다."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    result = measure_peak_memory(lambda: None)
+    assert result.status == "no_cuda"
+    assert result.peak_allocated_bytes is None
+    assert result.peak_reserved_bytes is None
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA 필요")
-def test_successful_run_reports_positive_peak():
+def test_successful_run_reports_both_statistics():
     def allocates():
         torch.zeros(1024, 1024, device="cuda")
 
     result = measure_peak_memory(allocates)
     assert result.status == "ok"
-    assert result.peak_bytes > 0
+    assert result.peak_allocated_bytes > 0
+    assert result.peak_reserved_bytes >= result.peak_allocated_bytes
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -537,35 +574,58 @@ import torch
 
 @dataclass(frozen=True)
 class MemoryResult:
-    peak_bytes: int | None
+    peak_allocated_bytes: int | None
+    peak_reserved_bytes: int | None
     status: str
+
+
+def _is_oom(exc: BaseException) -> bool:
+    """CUDA OOM이 오는 두 가지 형태를 모두 인정한다.
+
+    `torch.cuda.OutOfMemoryError`가 표준 경로지만, cuDNN workspace 할당 실패
+    등에서는 메시지에 'out of memory'가 든 평범한 RuntimeError로 샌다. 후자를
+    놓치면 sweep이 고해상도 셀에서 죽고, 하필 그 셀이 논문의 메모리 주장이
+    걸린 자리다. 반대로 RuntimeError를 전부 삼키면 진짜 버그가 가짜 메모리
+    한계로 결과표에 실리므로, 메시지를 확인해 구분한다.
+    """
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
 
 
 def measure_peak_memory(fn: Callable[[], object]) -> MemoryResult:
     if not torch.cuda.is_available():
         try:
             fn()
-        except torch.cuda.OutOfMemoryError:
-            return MemoryResult(peak_bytes=None, status="oom")
-        return MemoryResult(peak_bytes=None, status="no_cuda")
+        except RuntimeError as exc:
+            if not _is_oom(exc):
+                raise
+            return MemoryResult(None, None, "oom")
+        return MemoryResult(None, None, "no_cuda")
 
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
     try:
         fn()
-    except torch.cuda.OutOfMemoryError:
+    except RuntimeError as exc:
+        if not _is_oom(exc):
+            raise
         torch.cuda.empty_cache()
-        return MemoryResult(peak_bytes=None, status="oom")
+        return MemoryResult(None, None, "oom")
 
     torch.cuda.synchronize()
-    return MemoryResult(peak_bytes=torch.cuda.max_memory_allocated(), status="ok")
+    return MemoryResult(
+        peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+        peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+        status="ok",
+    )
 ```
 
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_memory.py -v`
-Expected: PASS 3건 (CUDA 없으면 1건 skip)
+Expected: PASS 6건 (CUDA 없으면 마지막 1건 skip)
 
 - [ ] **Step 5: 커밋**
 
@@ -1174,7 +1234,7 @@ git commit -m "feat: find the largest batch 8GB holds and time it"
 - Produces:
   - `experiments.e1_resolution_sweep.RESOLUTIONS: tuple[int, ...]` — `(224, 384, 512, 768, 1024)`
   - `experiments.e1_resolution_sweep.run_sweep(model_names, resolutions, out_dir) -> pandas.DataFrame`
-  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_bytes, max_batch, images_per_sec, status`
+  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_allocated_bytes, peak_reserved_bytes, max_batch, images_per_sec, status`
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1191,7 +1251,8 @@ EXPECTED_COLUMNS = [
     "flops_traced",
     "flops_uncounted_ops",
     "latency_ms",
-    "peak_bytes",
+    "peak_allocated_bytes",
+    "peak_reserved_bytes",
     "max_batch",
     "images_per_sec",
     "status",
@@ -1222,7 +1283,7 @@ def test_oom_rows_are_kept_with_status_not_dropped(tmp_path, monkeypatch):
     from bench.memory import MemoryResult
 
     monkeypatch.setattr(
-        e1, "measure_peak_memory", lambda fn: MemoryResult(None, "oom")
+        e1, "measure_peak_memory", lambda fn: MemoryResult(None, None, "oom")
     )
     df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
     assert len(df) == 1
@@ -1265,7 +1326,8 @@ COLUMNS = [
     "flops_traced",
     "flops_uncounted_ops",
     "latency_ms",
-    "peak_bytes",
+    "peak_allocated_bytes",
+    "peak_reserved_bytes",
     "max_batch",
     "images_per_sec",
     "status",
@@ -1292,7 +1354,8 @@ def _measure_one(model_name: str, resolution: int) -> dict:
         "flops_traced": None,
         "flops_uncounted_ops": "",
         "latency_ms": None,
-        "peak_bytes": None,
+        "peak_allocated_bytes": None,
+        "peak_reserved_bytes": None,
         "max_batch": None,
         "images_per_sec": None,
         "status": "ok",
@@ -1306,7 +1369,8 @@ def _measure_one(model_name: str, resolution: int) -> dict:
         captured["latency_ms"] = measure_latency(model, shape, device=device)
 
     memory = measure_peak_memory(_timed_run)
-    row["peak_bytes"] = memory.peak_bytes
+    row["peak_allocated_bytes"] = memory.peak_allocated_bytes
+    row["peak_reserved_bytes"] = memory.peak_reserved_bytes
     row["status"] = memory.status
     row["latency_ms"] = captured.get("latency_ms")
 
@@ -1463,7 +1527,8 @@ def test_writes_a_png_from_the_csv(tmp_path):
                 "flops_traced": 4.6e9,
                 "flops_uncounted_ops": "",
                 "latency_ms": 5.0,
-                "peak_bytes": 1_000_000,
+                "peak_allocated_bytes": 1_000_000,
+                "peak_reserved_bytes": 2_000_000,
                 "status": "ok",
             }
         ],
@@ -1492,7 +1557,8 @@ def test_oom_rows_do_not_become_zero_points(tmp_path):
                 "flops_traced": None,
                 "flops_uncounted_ops": "",
                 "latency_ms": None,
-                "peak_bytes": None,
+                "peak_allocated_bytes": None,
+                "peak_reserved_bytes": None,
                 "status": "oom",
             }
         ],
@@ -1522,7 +1588,8 @@ import pandas as pd
 PANELS = [
     ("flops_traced", "FLOPs", 1e9, "GFLOPs"),
     ("latency_ms", "Latency", 1.0, "ms"),
-    ("peak_bytes", "Peak VRAM", 1024**3, "GiB"),
+    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB"),
+    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB"),
 ]
 
 
@@ -1532,7 +1599,7 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
         raise ValueError(f"{csv_path}가 비어 있다 — 먼저 sweep을 실행할 것")
 
     out_path = Path(out_path)
-    fig, axes = plt.subplots(1, len(PANELS), figsize=(15, 4))
+    fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
 
     for ax, (column, title, scale, unit) in zip(axes, PANELS):
         for model, group in df.groupby("model"):
