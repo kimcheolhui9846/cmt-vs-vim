@@ -87,7 +87,7 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
         else:
             # 범례를 부르면 "No artists with labels" 경고가 난다.
             ax.text(
-                0.5, 0.5, "측정된 값 없음",
+                0.5, 0.5, "no values measured",
                 transform=ax.transAxes, ha="center", va="center",
             )
 
