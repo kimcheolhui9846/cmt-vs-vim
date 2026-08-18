@@ -14,6 +14,10 @@ def build_model(name: str, pretrained: bool = True, img_size: int = 224) -> nn.M
         )
     if name == "deit_s":
         return _build_deit_s(pretrained=pretrained, img_size=img_size)
+    if name == "cmt_s":
+        from models.cmt import load_cmt_small
+
+        return load_cmt_small(pretrained=pretrained, img_size=img_size)
     raise NotImplementedError(f"'{name}'은 이후 태스크에서 붙인다")
 
 
