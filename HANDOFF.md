@@ -36,7 +36,7 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 ## 현재 상태
 
 - 브랜치: `feat/e1-resolution-sweep` (main에 머지 안 됨, 원격에 푸시됨)
-- 테스트: **44건 전부 통과**
+- 테스트: **48건 전부 통과** (timm deprecation 경고 3건만 남음 — 무해)
 - 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크)
 - SDD 원장: `.superpowers/sdd/2026-08-18-e1-resolution-sweep/progress.md` — git-ignored,
   태스크별 완료·수정 라운드·이월된 minor가 전부 기록돼 있다
@@ -54,6 +54,10 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 | 9 | `bench/throughput.py` | 최대 배치 이진 탐색 + 처리량 |
 | 10 | `experiments/e1_resolution_sweep.py` | sweep 오케스트레이션 |
 | 12 | `figures/e1_plot.py` | CSV → 4패널 그림 |
+
+Task 8, 11이 없으므로 `build_model("vim_s")`는 아직 `NotImplementedError`를 던진다.
+`experiments/e1_resolution_sweep.py`를 그냥 실행하면 vim_s 5셀이 `status="error"`
+행으로 기록된다 — 죽지는 않지만 그 CSV는 불완전하다.
 
 ### 남은 태스크 — 전부 WSL2 필요
 
@@ -122,6 +126,24 @@ Task 13 Step 1이 고정 환경에서 `pytest tests/`를 재확인하는 관문�
   재기 전에 return했다. 이제 FLOPs를 가장 먼저 잰다.
 - **가중치 로딩을 E2/E3로 이관** — E1은 연산 비용만 재므로 가중치가 불필요하다.
   `build_model(..., pretrained=True)`는 `NotImplementedError`를 던진다.
+- **그림이 측정 실패를 감췄다** — `status`가 `error`나 `no_cuda`인 행이 흔적 없이
+  빠져, 측정에 실패한 셀과 아직 재지 않은 셀이 구분되지 않았다. 출처 없는 수치가
+  문제였던 논문에 "왜 비었는지 알 수 없는 빈칸"을 넣는 셈이었다. 이제 `MISSING_STATUSES`가
+  셋 다 색과 라벨로 구분한다.
+
+### 테스트가 이름값을 하는지 확인할 것
+
+Task 12에서 리뷰어가 OOM을 0으로 그리는 회귀를 코드에 직접 주입했더니 테스트 3건이
+**그대로 통과**했다. `test_oom_rows_do_not_become_zero_points`가 `out.exists()`만
+단언하고 있었기 때문이다 — PNG는 어느 쪽이든 만들어진다.
+
+고친 방식은 단언 강화가 아니라 구조 변경이었다. "무엇을 그릴지" 판단을 `plotted_series`와
+`missing_cells` 두 순수 함수로 빼서, matplotlib 내부를 뒤지지 않고 직접 검증한다.
+남은 태스크에서도 같은 질문을 할 것 — **이 테스트는 자기가 막는다고 주장하는 회귀를
+넣었을 때 실제로 실패하는가.**
+
+그림에 그려지는 문자열은 전부 영어로 둔다. matplotlib 기본 폰트에 한글 글리프가 없어
+PNG에 네모 상자로 찍힌다. 코드 주석과 docstring은 한글 그대로다.
 
 ### 4. 논문 개정 시 반영할 사실
 
