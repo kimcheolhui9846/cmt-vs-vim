@@ -1280,8 +1280,15 @@ git commit -m "feat: find the largest batch 8GB holds and time it"
 - Consumes: `bench.env.snapshot`, `bench.flops.count_flops`, `bench.latency.measure_latency`, `bench.memory.measure_peak_memory`, `bench.throughput.measure_throughput`, `models.registry.build_model`
 - Produces:
   - `experiments.e1_resolution_sweep.RESOLUTIONS: tuple[int, ...]` — `(224, 384, 512, 768, 1024)`
+  - `experiments.e1_resolution_sweep.COLUMNS: list[str]`
   - `experiments.e1_resolution_sweep.run_sweep(model_names, resolutions, out_dir) -> pandas.DataFrame`
-  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_allocated_bytes, peak_reserved_bytes, max_batch, images_per_sec, status`
+  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_allocated_bytes, peak_reserved_bytes, max_batch, images_per_sec, status, error`
+
+실행이 15셀 한 시간 규모라는 점이 이 태스크의 설계를 좌우한다. 두 가지가 따라온다.
+
+**셀마다 CSV를 다시 쓴다.** 마지막에 한 번만 쓰면 14번째 셀에서 예외가 났을 때 앞의 13셀이 통째로 사라진다. 실패한 셀은 `status="error"`와 `error` 메시지를 담은 행으로 남겨, 무엇이 빠졌는지 나중에 알 수 있게 한다. 실패를 예외로 터뜨려 실행을 끝내지 않는다 — 그 대가가 GPU 한 시간이다.
+
+**FLOPs를 가장 먼저 잰다.** `count_flops`는 CPU 트레이스라 OOM이 날 수 없다. 메모리에 안 들어가는 해상도에서도 연산량은 논문 표에 필요한 값이므로, OOM 때문에 FLOPs까지 잃으면 안 된다. 순서를 FLOPs(CPU) → latency+메모리(GPU) → throughput(GPU)로 두면 장치 왕복도 한 번으로 줄어든다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1289,7 +1296,9 @@ git commit -m "feat: find the largest batch 8GB holds and time it"
 # tests/test_e1.py
 import pandas as pd
 
-from experiments.e1_resolution_sweep import RESOLUTIONS, run_sweep
+import experiments.e1_resolution_sweep as e1
+from bench.memory import MemoryResult
+from experiments.e1_resolution_sweep import COLUMNS, RESOLUTIONS, run_sweep
 
 EXPECTED_COLUMNS = [
     "model",
@@ -1303,38 +1312,108 @@ EXPECTED_COLUMNS = [
     "max_batch",
     "images_per_sec",
     "status",
+    "error",
 ]
+
+
+def _stub_row(model_name: str, resolution: int) -> dict:
+    row = {column: None for column in COLUMNS}
+    row.update(
+        model=model_name,
+        resolution=resolution,
+        flops_uncounted_ops="",
+        status="ok",
+    )
+    return row
 
 
 def test_sweeps_the_five_resolutions_from_the_spec():
     assert RESOLUTIONS == (224, 384, 512, 768, 1024)
 
 
-def test_writes_one_row_per_model_resolution_pair(tmp_path):
+def test_writes_one_row_per_model_resolution_pair(tmp_path, monkeypatch):
+    monkeypatch.setattr(e1, "_measure_one", _stub_row)
+
     df = run_sweep(
-        model_names=("deit_s",), resolutions=(224, 384), out_dir=tmp_path
+        model_names=("deit_s", "cmt_s"), resolutions=(224, 384), out_dir=tmp_path
     )
-    assert len(df) == 2
+
+    assert len(df) == 4
     assert list(df.columns) == EXPECTED_COLUMNS
 
 
-def test_persists_a_csv_and_an_env_snapshot(tmp_path):
+def test_persists_a_csv_and_an_env_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(e1, "_measure_one", _stub_row)
+
     run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
     assert (tmp_path / "sweep.csv").exists()
     assert (tmp_path / "env.json").exists()
 
 
+def test_a_failing_cell_does_not_lose_the_cells_already_measured(tmp_path, monkeypatch):
+    """15셀 한 시간짜리 실행이 중간에 죽어도 앞의 결과는 남아야 한다.
+    이 방어가 없으면 GPU 한 시간이 예외 하나로 사라진다."""
+    calls = {"n": 0}
+
+    def flaky(model_name, resolution):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("이 셀만 터진다")
+        return _stub_row(model_name, resolution)
+
+    monkeypatch.setattr(e1, "_measure_one", flaky)
+
+    df = run_sweep(
+        model_names=("deit_s",), resolutions=(224, 384, 512), out_dir=tmp_path
+    )
+
+    assert len(df) == 3
+    assert list(df["status"]) == ["ok", "error", "ok"]
+    assert "이 셀만 터진다" in df.iloc[1]["error"]
+
+    on_disk = pd.read_csv(tmp_path / "sweep.csv")
+    assert len(on_disk) == 3
+
+
+def test_csv_exists_before_the_sweep_finishes(tmp_path, monkeypatch):
+    """마지막에 한 번만 쓰면 중간 실패 시 파일 자체가 없다."""
+    seen = []
+
+    def record_then_stub(model_name, resolution):
+        seen.append((tmp_path / "sweep.csv").exists())
+        return _stub_row(model_name, resolution)
+
+    monkeypatch.setattr(e1, "_measure_one", record_then_stub)
+    run_sweep(model_names=("deit_s",), resolutions=(224, 384), out_dir=tmp_path)
+
+    assert seen[1] is True, "두 번째 셀을 재기 전에 첫 셀이 이미 디스크에 있어야 한다"
+
+
 def test_oom_rows_are_kept_with_status_not_dropped(tmp_path, monkeypatch):
     """OOM은 결과다. 행이 사라지면 메모리 주장의 증거가 사라진다."""
-    import experiments.e1_resolution_sweep as e1
-    from bench.memory import MemoryResult
-
     monkeypatch.setattr(
         e1, "measure_peak_memory", lambda fn: MemoryResult(None, None, "oom")
     )
+
     df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
     assert len(df) == 1
     assert df.iloc[0]["status"] == "oom"
+
+
+def test_flops_survive_an_oom_row(tmp_path, monkeypatch):
+    """FLOPs는 CPU 트레이스라 OOM과 무관하다. 메모리에 안 들어가는 해상도에서도
+    연산량은 논문 표에 들어갈 값이므로 함께 잃으면 안 된다."""
+    monkeypatch.setattr(
+        e1, "measure_peak_memory", lambda fn: MemoryResult(None, None, "oom")
+    )
+
+    df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
+    assert df.iloc[0]["status"] == "oom"
+    assert df.iloc[0]["flops_traced"] > 0
+    assert df.iloc[0]["params"] > 0
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1378,6 +1457,7 @@ COLUMNS = [
     "max_batch",
     "images_per_sec",
     "status",
+    "error",
 ]
 
 
@@ -1389,24 +1469,27 @@ def _op_handlers(model_name: str) -> dict:
     return {}
 
 
+def _blank_row(model_name: str, resolution: int) -> dict:
+    row = {column: None for column in COLUMNS}
+    row.update(model=model_name, resolution=resolution, flops_uncounted_ops="")
+    return row
+
+
 def _measure_one(model_name: str, resolution: int) -> dict:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = build_model(model_name, pretrained=False, img_size=resolution)
     shape = (3, resolution, resolution)
 
-    row = {
-        "model": model_name,
-        "resolution": resolution,
-        "params": sum(p.numel() for p in model.parameters()),
-        "flops_traced": None,
-        "flops_uncounted_ops": "",
-        "latency_ms": None,
-        "peak_allocated_bytes": None,
-        "peak_reserved_bytes": None,
-        "max_batch": None,
-        "images_per_sec": None,
-        "status": "ok",
-    }
+    row = _blank_row(model_name, resolution)
+    row["status"] = "ok"
+
+    model = build_model(model_name, pretrained=False, img_size=resolution)
+    row["params"] = sum(p.numel() for p in model.parameters())
+
+    # FLOPs를 먼저 잰다. CPU 트레이스라 OOM이 날 수 없으므로, 메모리에 들어가지
+    # 않는 셀에서도 연산량은 남는다.
+    flops = count_flops(model, shape, op_handlers=_op_handlers(model_name))
+    row["flops_traced"] = flops.traced
+    row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
 
     # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
     # 1024²에서 150 iteration을 두 번 돌게 된다.
@@ -1424,13 +1507,16 @@ def _measure_one(model_name: str, resolution: int) -> dict:
     if memory.status == "oom":
         return row
 
-    flops = count_flops(model, shape, op_handlers=_op_handlers(model_name))
-    row["flops_traced"] = flops.traced
-    row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
-
     throughput = measure_throughput(model, shape, device=device)
     row["max_batch"] = throughput.batch
     row["images_per_sec"] = throughput.images_per_sec
+    return row
+
+
+def _error_row(model_name: str, resolution: int, exc: BaseException) -> dict:
+    row = _blank_row(model_name, resolution)
+    row["status"] = "error"
+    row["error"] = f"{type(exc).__name__}: {exc}"
     return row
 
 
@@ -1441,14 +1527,26 @@ def run_sweep(
 ) -> pd.DataFrame:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "sweep.csv"
+    (out_dir / "env.json").write_text(json.dumps(snapshot(), indent=2))
 
-    rows = [
-        _measure_one(name, res) for name in model_names for res in resolutions
-    ]
+    rows: list[dict] = []
+    for name in model_names:
+        for resolution in resolutions:
+            try:
+                rows.append(_measure_one(name, resolution))
+            except Exception as exc:  # 한 셀의 실패로 전체를 잃지 않는다
+                rows.append(_error_row(name, resolution, exc))
+            # 셀마다 다시 쓴다. 한 시간짜리 실행이 도중에 죽어도 앞의 결과는 남는다.
+            pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
+
     df = pd.DataFrame(rows, columns=COLUMNS)
 
-    df.to_csv(out_dir / "sweep.csv", index=False)
-    (out_dir / "env.json").write_text(json.dumps(snapshot(), indent=2))
+    failed = df[df["status"] == "error"]
+    if not failed.empty:
+        cells = ", ".join(f"{r.model}@{r.resolution}" for r in failed.itertuples())
+        print(f"경고: {len(failed)}개 셀 실패 — {cells}. 숫자를 쓰기 전에 확인할 것.")
+
     return df
 
 
@@ -1459,13 +1557,13 @@ if __name__ == "__main__":
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_e1.py -v`
-Expected: PASS 4건
+Expected: PASS 7건
 
 - [ ] **Step 5: 커밋**
 
 ```bash
 git add experiments/ tests/test_e1.py
-git commit -m "feat: sweep the three models across five resolutions into one CSV"
+git commit -m "feat: sweep the models into a CSV that survives a failed cell"
 ```
 
 ---
