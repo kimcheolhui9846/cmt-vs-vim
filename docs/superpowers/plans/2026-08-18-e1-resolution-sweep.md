@@ -863,7 +863,7 @@ import는 `timm.models.helpers` 등 timm 0.x 경로를 쓰지만 timm 1.0.28에�
 
 ```bash
 git add models/cmt.py models/cmt_official.py models/registry.py tests/test_cmt.py
-git commit -m "feat: load CMT-S and interpolate its position bias across resolutions"
+git commit -m "feat: build CMT-S at any sweep resolution"
 ```
 
 ---
