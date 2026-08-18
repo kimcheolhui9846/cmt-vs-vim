@@ -9,7 +9,10 @@ EXPECTED_COLUMNS = [
     "resolution",
     "params",
     "flops_traced",
+    "flops_analytic",
+    "flops_total",
     "flops_uncounted_ops",
+    "flops_unexpected_ops",
     "latency_ms",
     "peak_allocated_bytes",
     "peak_reserved_bytes",
@@ -26,6 +29,7 @@ def _stub_row(model_name: str, resolution: int) -> dict:
         model=model_name,
         resolution=resolution,
         flops_uncounted_ops="",
+        flops_unexpected_ops="",
         status="ok",
     )
     return row
@@ -116,5 +120,5 @@ def test_flops_survive_an_oom_row(tmp_path, monkeypatch):
     df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
 
     assert df.iloc[0]["status"] == "oom"
-    assert df.iloc[0]["flops_traced"] > 0
+    assert df.iloc[0]["flops_total"] > 0
     assert df.iloc[0]["params"] > 0

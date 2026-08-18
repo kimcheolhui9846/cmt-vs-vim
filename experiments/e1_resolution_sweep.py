@@ -12,9 +12,9 @@ import torch
 from bench.env import snapshot
 from bench.flops import count_flops
 from bench.latency import measure_latency
-from bench.memory import measure_peak_memory
+from bench.memory import is_oom, measure_peak_memory
 from bench.throughput import measure_throughput
-from models.registry import MODEL_NAMES, build_model
+from models.registry import MODEL_NAMES, build_model, traceable
 
 RESOLUTIONS = (224, 384, 512, 768, 1024)
 
@@ -23,7 +23,10 @@ COLUMNS = [
     "resolution",
     "params",
     "flops_traced",
+    "flops_analytic",
+    "flops_total",
     "flops_uncounted_ops",
+    "flops_unexpected_ops",
     "latency_ms",
     "peak_allocated_bytes",
     "peak_reserved_bytes",
@@ -42,9 +45,24 @@ def _op_handlers(model_name: str) -> dict:
     return {}
 
 
+def _flops_device(model_name: str, device: str) -> str:
+    """Vim만 CUDA에서 센다.
+
+    selective scan과 causal conv1d가 CUDA 전용 커널이라 CPU에서는 트레이스 자체가
+    불가능하다. 나머지 둘은 CPU에서 세는 편이 낫다 — 그래프가 같아 값이 동일하고,
+    메모리에 들어가지 않는 셀에서도 연산량이 남는다.
+    """
+    return device if model_name == "vim_s" else "cpu"
+
+
 def _blank_row(model_name: str, resolution: int) -> dict:
     row = {column: None for column in COLUMNS}
-    row.update(model=model_name, resolution=resolution, flops_uncounted_ops="")
+    row.update(
+        model=model_name,
+        resolution=resolution,
+        flops_uncounted_ops="",
+        flops_unexpected_ops="",
+    )
     return row
 
 
@@ -58,11 +76,29 @@ def _measure_one(model_name: str, resolution: int) -> dict:
     model = build_model(model_name, pretrained=False, img_size=resolution)
     row["params"] = sum(p.numel() for p in model.parameters())
 
-    # FLOPs를 먼저 잰다. CPU 트레이스라 OOM이 날 수 없으므로, 메모리에 들어가지
-    # 않는 셀에서도 연산량은 남는다.
-    flops = count_flops(model, shape, op_handlers=_op_handlers(model_name))
-    row["flops_traced"] = flops.traced
-    row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
+    # FLOPs를 먼저 잰다. DeiT·CMT는 CPU 트레이스라 OOM이 날 수 없고, 그래서
+    # 메모리에 들어가지 않는 셀에서도 연산량은 남는다. Vim만 예외다 — 커널이 CUDA
+    # 전용이라 이 모델은 FLOPs 측정도 OOM 날 수 있다. 그때는 연산량 칸만 비우고
+    # 계속 간다. 셀 전체를 error로 날리면 그 해상도에서 OOM이 났다는 사실까지 잃는다.
+    try:
+        with traceable(model_name, model):
+            flops = count_flops(
+                model,
+                shape,
+                op_handlers=_op_handlers(model_name),
+                device=_flops_device(model_name, device),
+            )
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    else:
+        row["flops_traced"] = flops.traced
+        row["flops_analytic"] = flops.analytic
+        row["flops_total"] = flops.total
+        row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
+        row["flops_unexpected_ops"] = ";".join(flops.unexpected_uncounted_ops)
 
     # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
     # 1024²에서 150 iteration을 두 번 돌게 된다.

@@ -8,7 +8,10 @@ BASE_ROW = {
     "resolution": 224,
     "params": 22_000_000,
     "flops_traced": 4.6e9,
+    "flops_analytic": 0,
+    "flops_total": 4.6e9,
     "flops_uncounted_ops": "",
+    "flops_unexpected_ops": "",
     "latency_ms": 5.0,
     "peak_allocated_bytes": 1_000_000,
     "peak_reserved_bytes": 2_000_000,
@@ -70,9 +73,9 @@ def test_error_and_no_cuda_cells_are_also_absent_from_the_series():
 
 def test_a_row_missing_only_one_column_does_not_poison_the_others():
     """FLOPs는 OOM 셀에도 남는다. latency가 없다고 FLOPs까지 버리면 안 된다."""
-    df = _frame([_row(resolution=1024, status="oom", flops_traced=90e9, **UNMEASURED)])
+    df = _frame([_row(resolution=1024, status="oom", flops_total=90e9, **UNMEASURED)])
 
-    assert plotted_series(df, "flops_traced") == {}
+    assert plotted_series(df, "flops_total") == {}
     assert missing_cells(df) == [(1024, "deit_s", "oom")]
 
 

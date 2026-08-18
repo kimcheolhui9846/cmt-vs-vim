@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 PANELS = [
-    ("flops_traced", "FLOPs", 1e9, "GFLOPs"),
+    ("flops_total", "FLOPs", 1e9, "GFLOPs"),
     ("latency_ms", "Latency", 1.0, "ms"),
     ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB"),
     ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB"),
