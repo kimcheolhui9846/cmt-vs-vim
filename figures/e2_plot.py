@@ -74,6 +74,21 @@ def check_map_key_format(keys) -> None:
         )
 
 
+def format_metric(value, fmt: str = "{:.2f}") -> str:
+    """지표 하나를 패널 제목용 문자열로. 값이 없으면(NaN/None) "n/a".
+
+    맵은 accumulate_erf가 성공하는 순간 저장되고, 그 뒤 지표 각각은 독립적으로
+    실패할 수 있다(예: decay_ratio가 피크 경계 근접으로 정의되지 않음). 그런
+    셀도 맵은 있으므로 히트맵은 그려지는데, 없는 지표를 그냥 포맷하면
+    "decay nan"처럼 무엇이 없는지 불분명한 문자열이 나온다. "n/a"가 "이
+    지표만 정의되지 않았다"는 뜻을 분명히 한다 — 셀 전체가 "not measured"인
+    것과는 다르다.
+    """
+    if pd.isna(value):
+        return "n/a"
+    return fmt.format(value)
+
+
 def erf_panel_key(parsed: list[dict], model: str, condition: str) -> str | None:
     """이 (model, condition) 패널에 그릴 npz 키 — 가장 큰 N.
 
@@ -112,8 +127,8 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
                 if not cell.empty:
                     ax.set_title(
                         f"{model} / {condition}\n"
-                        f"anisotropy {cell.iloc[0]['anisotropy']:.2f}, "
-                        f"decay {cell.iloc[0]['decay_ratio']:.2f}"
+                        f"anisotropy {format_metric(cell.iloc[0]['anisotropy'])}, "
+                        f"decay {format_metric(cell.iloc[0]['decay_ratio'])}"
                     )
             else:
                 ax.text(0.5, 0.5, "not measured", transform=ax.transAxes,
@@ -124,11 +139,25 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
         curve = df[(df["model"] == model) & (df["condition"] == "natural")
                    & (df["status"] == "ok")].sort_values("n_images")
         ax = axes[row][3]
-        ax.plot(curve["n_images"], curve["anisotropy"], marker="o")
+        ax.plot(curve["n_images"], curve["anisotropy"], marker="o", color="tab:blue",
+                 label="anisotropy index")
         ax.set_xscale("log", base=2)
         ax.set_xlabel("images averaged")
-        ax.set_ylabel("anisotropy index")
+        ax.set_ylabel("anisotropy index", color="tab:blue")
+        ax.tick_params(axis="y", labelcolor="tab:blue")
         ax.set_title(f"{model} / convergence")
+
+        # decay_ratio가 주 지표다(anisotropy_index는 far-field 꼬리에 지배돼
+        # 한계가 있다) — 같은 패널에 겹쳐 그려야 두 지표의 수렴 여부를 나란히
+        # 볼 수 있다. 일부 N에서 decay_ratio가 정의되지 않을 수 있으므로
+        # (예: 피크가 경계에 너무 가까움) 값이 있는 점만 그린다.
+        decay_curve = curve[curve["decay_ratio"].notna()]
+        if not decay_curve.empty:
+            ax2 = ax.twinx()
+            ax2.plot(decay_curve["n_images"], decay_curve["decay_ratio"], marker="s",
+                     color="tab:orange", label="decay ratio")
+            ax2.set_ylabel("decay ratio", color="tab:orange")
+            ax2.tick_params(axis="y", labelcolor="tab:orange")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)

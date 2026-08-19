@@ -3,6 +3,7 @@ import pytest
 
 from bench.erf import (
     anisotropy_index,
+    central_crop,
     decay_ratio,
     decay_window,
     has_converged,
@@ -45,12 +46,15 @@ def test_the_principal_axis_of_a_vertical_blob_is_vertical():
 
 
 def test_decay_ratio_is_one_when_both_axes_fall_alike():
-    assert decay_ratio(_gaussian(20, 20)) == pytest.approx(1.0, rel=0.05)
+    ratio, window = decay_ratio(_gaussian(20, 20))
+    assert ratio == pytest.approx(1.0, rel=0.05)
+    assert window == 64
 
 
 def test_decay_ratio_exceeds_one_when_the_vertical_falls_faster():
     """논문 3.1절이 Vim에 대해 예측하는 방향이다 — 수직이 더 가파르다."""
-    assert decay_ratio(_gaussian(30, 10)) > 1.5
+    ratio, _window = decay_ratio(_gaussian(30, 10))
+    assert ratio > 1.5
 
 
 def test_convergence_looks_at_the_last_two_points():
@@ -94,4 +98,41 @@ def test_decay_ratio_still_works_exactly_at_the_minimum_window():
     """경계값(반경 정확히 8)에서는 터지지 않아야 한다 — '미만'이지 '이하'가
     아니다."""
     erf = _gaussian_at(center_row=8, center_col=112, sigma_x=20, sigma_y=20)
-    assert isinstance(decay_ratio(erf), float)
+    ratio, window = decay_ratio(erf)
+    assert isinstance(ratio, float)
+    assert window == 8
+
+
+def test_decay_ratio_returns_the_window_it_actually_used():
+    """반경을 decay_window()로 따로 다시 계산하면 두 호출이 어긋날 여지가
+    생긴다 — decay_ratio가 자기가 실제로 쓴 반경을 값과 함께 돌려줘야
+    호출자가 별도 계산 없이 그대로 CSV에 남길 수 있다."""
+    erf = _gaussian_at(center_row=10, center_col=112, sigma_x=20, sigma_y=20)
+    _ratio, window = decay_ratio(erf)
+    assert window == decay_window(erf) == 10
+
+
+def test_central_crop_keeps_the_middle_of_the_array():
+    erf = _gaussian(20, 20)
+    cropped = central_crop(erf, size=128)
+
+    assert cropped.shape == (128, 128)
+    # 224² 배열의 (112,112)는 128² 잘라낸 배열의 (64,64)로 옮겨간다
+    # (row0 = (224-128)//2 = 48; 112-48 = 64).
+    assert cropped[64, 64] == erf[112, 112]
+
+
+def test_central_crop_removes_the_far_field_tail():
+    """중심 128²는 96px 반경의 원반이다 — 224² 전체보다 훨씬 좁으므로 넓게
+    퍼진 등방적 배경(pedestal)이 있는 맵에서는 자른 쪽의 지수가 더 커야 한다.
+    새 수학이 아니라 anisotropy_index를 잘라낸 맵에 그대로 적용한 것임을
+    확인한다."""
+    # 중심의 좁고 수평으로 늘어난 blob 위에, 넓고 둥근(등방) 배경을 얹는다.
+    core = _gaussian(30, 10)
+    pedestal = 0.5 * _gaussian(90, 90)
+    erf = core + pedestal
+
+    whole = anisotropy_index(erf)
+    central = anisotropy_index(central_crop(erf, size=128))
+
+    assert central > whole

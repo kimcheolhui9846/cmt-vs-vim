@@ -47,9 +47,27 @@ def _covariance(erf: np.ndarray) -> np.ndarray:
 
 
 def anisotropy_index(erf: np.ndarray) -> float:
-    """√(λ_max / λ_min). 등방이면 1.0."""
+    """√(λ_max / λ_min). 등방이면 1.0.
+
+    2차 모먼트는 거리 제곱으로 가중하므로 far-field 꼬리에 지배된다 — 중심의
+    좁은 능선이 비등방이어도 넓고 등방적인 배경(pedestal)이 있으면 전체 지수는
+    등방 쪽으로 끌려간다. `central_crop`으로 꼬리를 자른 맵에 이 함수를 다시
+    적용하면(`anisotropy_central`) 그 효과를 분리해 볼 수 있다.
+    """
     eigenvalues = np.linalg.eigvalsh(_covariance(erf))
     return float(np.sqrt(eigenvalues.max() / eigenvalues.min()))
+
+
+def central_crop(erf: np.ndarray, size: int = 128) -> np.ndarray:
+    """배열 중심에서 size×size만큼 잘라낸다.
+
+    새 수학이 아니다 — 기존 `anisotropy_index`를 꼬리 없는 맵에 그대로 적용해
+    "지수가 far-field에 얼마나 좌우되는가"를 데이터로 드러내려는 목적이다.
+    """
+    n_rows, n_cols = erf.shape
+    row0 = (n_rows - size) // 2
+    col0 = (n_cols - size) // 2
+    return erf[row0 : row0 + size, col0 : col0 + size]
 
 
 def principal_angle_deg(erf: np.ndarray) -> float:
@@ -94,13 +112,18 @@ def decay_window(erf: np.ndarray, max_distance: int = 64) -> int:
     return int(min(max_distance, up, down, left, right))
 
 
-def decay_ratio(erf: np.ndarray, max_distance: int = 64) -> float:
-    """수직 감쇠 기울기 / 수평 감쇠 기울기. 1보다 크면 수직이 더 가파르다.
+def decay_ratio(erf: np.ndarray, max_distance: int = 64) -> tuple[float, int]:
+    """(수직 감쇠 기울기 / 수평 감쇠 기울기, 실제로 쓴 반경)을 함께 돌려준다.
+    비율이 1보다 크면 수직이 더 가파르다.
+
+    반경을 `decay_window()`로 따로 조회해 호출자가 별도로 다시 계산하게 두면,
+    기록된 반경이 실제로 이 비율을 낸 반경과 같다는 보장이 코드 구조상 없다 —
+    두 번의 호출이 어긋날 수 있기 때문이다. 그래서 한 번의 호출에서 값과
+    반경을 쌍으로 돌려준다.
 
     피크가 경계에서 `MIN_DECAY_WINDOW`보다 가까우면 조용히 더 좁은 창으로
     계산하지 않고 ValueError를 던진다 — 반경이 셀마다 다르게 좁아지면 같은 열에
-    반경이 다른 값이 섞여 비교 불가능한 숫자가 된다. 실제로 쓴 반경은
-    `decay_window()`로 따로 조회한다.
+    반경이 다른 값이 섞여 비교 불가능한 숫자가 된다.
     """
     row, col = _peak(erf)
     window = decay_window(erf, max_distance)
@@ -112,7 +135,7 @@ def decay_ratio(erf: np.ndarray, max_distance: int = 64) -> float:
     offsets = np.arange(1, window + 1)
     horizontal = (erf[row, col + offsets] + erf[row, col - offsets]) / 2
     vertical = (erf[row + offsets, col] + erf[row - offsets, col]) / 2
-    return float(_log_slope(vertical) / _log_slope(horizontal))
+    return float(_log_slope(vertical) / _log_slope(horizontal)), window
 
 
 def has_converged(values: list[float], tolerance: float = 0.05) -> bool:

@@ -6,6 +6,7 @@ from figures.e2_plot import (
     check_map_key_format,
     erf_panel_key,
     final_metrics,
+    format_metric,
     parse_map_keys,
     plot_erf,
 )
@@ -56,6 +57,35 @@ def test_failed_rows_never_reach_the_table():
     df = pd.DataFrame([_row(status="error", anisotropy=None)])
 
     assert final_metrics(df).empty
+
+
+def test_final_metrics_keeps_a_row_whose_only_a_single_metric_is_missing():
+    """decay_ratio 하나가 정의되지 않아도(피크가 경계에 너무 가까움) status는
+    ok로 남는다 — 그 사실만으로 셀 전체를 표에서 빼면, 실제로 측정된 맵과
+    나머지 두 지표까지 존재하지 않는 것처럼 보이게 된다."""
+    df = pd.DataFrame([
+        _row(decay_ratio=None, error="decay_ratio: ValueError: 반경이 너무 좁다")
+    ])
+
+    final = final_metrics(df)
+
+    assert len(final) == 1
+    assert pd.isna(final.iloc[0]["decay_ratio"])
+    assert final.iloc[0]["anisotropy"] == pytest.approx(1.42)
+
+
+# --- format_metric -------------------------------------------------------
+
+
+def test_format_metric_renders_a_normal_value():
+    assert format_metric(1.4009) == "1.40"
+
+
+def test_format_metric_marks_a_missing_value_as_not_available():
+    """지표 하나만 정의되지 않은 셀에서 "decay nan"처럼 애매한 문자열을 쓰면
+    안 된다 — "n/a"가 이 지표만 없다는 뜻을 분명히 한다."""
+    assert format_metric(float("nan")) == "n/a"
+    assert format_metric(None) == "n/a"
 
 
 # --- npz 키 파싱 — model__condition__nN (Task 7 개정판) ------------------------
@@ -172,6 +202,25 @@ def test_plot_erf_renders_a_placeholder_for_a_genuinely_missing_cell(tmp_path):
     np.savez_compressed(npz, **{
         "deit_s__natural__n256": np.random.rand(224, 224),
         # noise 조건의 맵은 일부러 빼둔다 — 진짜 미측정 셀
+    })
+
+    out = plot_erf(csv, npz, tmp_path / "e2.png")
+
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_plot_erf_still_shows_the_map_when_only_decay_ratio_is_missing(tmp_path):
+    """status="ok"인데 decay_ratio만 NaN인 셀(피크가 경계에 너무 가까웠던
+    경우)은 맵이 있으므로 히트맵을 그려야 한다 — "not measured" 플레이스홀더는
+    npz에 맵 자체가 없는, 진짜 미측정 셀에만 나와야 한다."""
+    csv = tmp_path / "erf_metrics.csv"
+    pd.DataFrame([
+        _row(model="deit_s", condition="noise", decay_ratio=float("nan"),
+             error="decay_ratio: ValueError: 반경이 너무 좁다"),
+    ]).to_csv(csv, index=False)
+    npz = tmp_path / "erf_maps.npz"
+    np.savez_compressed(npz, **{
+        "deit_s__noise__n256": np.random.rand(224, 224),
     })
 
     out = plot_erf(csv, npz, tmp_path / "e2.png")

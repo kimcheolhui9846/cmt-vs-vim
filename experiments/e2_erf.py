@@ -14,8 +14,8 @@ from bench.env import snapshot
 from bench.erf import (
     accumulate_erf,
     anisotropy_index,
+    central_crop,
     decay_ratio,
-    decay_window,
     has_converged,
     principal_angle_deg,
 )
@@ -23,7 +23,7 @@ from data.voc import ensure_voc, load_images, sample_image_paths
 from models.registry import MODEL_NAMES, build_model
 
 CONDITIONS = ("natural", "noise", "random_init")
-SAMPLE_SIZES = (16, 32, 64, 128, 256)
+SAMPLE_SIZES = (16, 32, 64, 128, 256, 512)
 SEED = 0
 
 COLUMNS = [
@@ -31,10 +31,13 @@ COLUMNS = [
     "condition",
     "n_images",
     "anisotropy",
+    "anisotropy_central",
+    "anisotropy_converged",
     "principal_angle_deg",
+    "principal_angle_converged",
     "decay_ratio",
     "decay_window",
-    "converged",
+    "decay_ratio_converged",
     "status",
     "error",
 ]
@@ -89,6 +92,11 @@ def run_erf(
     env = snapshot()
     env["checkpoints"] = _checkpoint_hashes()
     env["seed"] = SEED
+    # random_init 조건은 build_model(..., pretrained=False)가 매번 새로
+    # 무작위 초기화한 모델을 준다. 시드 없이는 실행마다 다른 모델을 재는
+    # 셈이라 cls 토큰 가드(질량 반경 비교)의 숫자가 재현되지 않는다 — 아래
+    # 루프에서 random_init을 만들기 직전에 이 시드로 고정한다.
+    env["random_init_seed"] = SEED
     (out_dir / "env.json").write_text(json.dumps(env, indent=2))
     (out_dir / "images.txt").write_text("\n".join(_image_names(max_n)))
 
@@ -100,42 +108,78 @@ def run_erf(
 
     for name in model_names:
         for condition in CONDITIONS:
-            history: list[float] = []
+            ani_history: list[float] = []
+            angle_history: list[float] = []
+            decay_history: list[float] = []
+            if condition == "random_init":
+                torch.manual_seed(SEED)
             model = build_model(name, pretrained=condition != "random_init")
             for n in sample_sizes:
                 row = {column: None for column in COLUMNS}
                 row.update(model=name, condition=condition, n_images=n, status="ok")
+
                 try:
                     erf = accumulate_erf(
                         name, model, _images_for(condition, n, max_n), device=device
                     )
-                    ai = anisotropy_index(erf)
-                    pa = principal_angle_deg(erf)
-                    window = decay_window(erf)
-                    ratio = decay_ratio(erf)
-                except Exception as exc:  # 한 셀의 실패로 전체를 잃지 않는다
+                except Exception as exc:  # 원본조차 못 얻은, 가장 심각한 실패
                     row.update(status="error", error=f"{type(exc).__name__}: {exc}")
-                else:
-                    history.append(ai)
+                    rows.append(row)
+                    pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
+                    continue
+
+                # 맵을 지표 계산보다 먼저 저장한다. 예전엔 지표 계산이 전부
+                # 끝난 뒤(else 분기)에만 저장해서, decay_ratio 하나가 던지면
+                # accumulate_erf가 이미 성공시킨 맵까지 함께 버려졌다 — 그림이
+                # 실제로 측정된 셀을 "not measured"로 그리는 결과를 낳았다.
+                maps[f"{name}__{condition}__n{n}"] = erf
+                np.savez_compressed(maps_path, **maps)
+
+                errors: list[str] = []
+
+                try:
+                    ai = anisotropy_index(erf)
+                    ai_central = anisotropy_index(central_crop(erf))
+                    ani_history.append(ai)
                     row.update(
                         anisotropy=ai,
+                        anisotropy_central=ai_central,
+                        anisotropy_converged=has_converged(ani_history),
+                    )
+                except Exception as exc:
+                    errors.append(f"anisotropy: {type(exc).__name__}: {exc}")
+
+                try:
+                    pa = principal_angle_deg(erf)
+                    angle_history.append(pa)
+                    row.update(
                         principal_angle_deg=pa,
+                        principal_angle_converged=has_converged(angle_history),
+                    )
+                except Exception as exc:
+                    errors.append(f"principal_angle: {type(exc).__name__}: {exc}")
+
+                try:
+                    ratio, window = decay_ratio(erf)
+                    decay_history.append(ratio)
+                    row.update(
                         decay_ratio=ratio,
                         decay_window=window,
-                        converged=has_converged(history),
+                        decay_ratio_converged=has_converged(decay_history),
                     )
-                    maps[f"{name}__{condition}__n{n}"] = erf
-                    np.savez_compressed(maps_path, **maps)
+                except Exception as exc:
+                    errors.append(f"decay_ratio: {type(exc).__name__}: {exc}")
+
+                # status는 accumulate_erf 성공 여부만 본다 — 개별 지표가
+                # 실패해도 그 셀은 "측정됐지만 이 지표만 정의되지 않음"이지
+                # "측정 실패"가 아니다. 실패한 지표와 사유는 error에 남긴다.
+                if errors:
+                    row["error"] = "; ".join(errors)
 
                 rows.append(row)
                 # 셀마다 다시 쓴다. 긴 실행이 도중에 죽어도 앞의 결과는 남는다.
                 # try/except는 파이썬 예외만 잡는다 — OOM 킬러나 드라이버 크래시는
-                # 못 잡으므로, 그 순간까지의 결과가 디스크에 있어야 한다. 지표
-                # 계산(anisotropy_index/principal_angle_deg/decay_ratio)도 같은
-                # 블록 안에 넣었다 — 예전엔 accumulate_erf만 감쌌기 때문에,
-                # decay_ratio가 피크 경계 근접으로 예외를 던지면 그 순간 실행
-                # 전체가 죽어 이후 모델·조건이 통째로 사라졌다(cmt_s/noise에서
-                # 실제로 재현됨).
+                # 못 잡으므로, 그 순간까지의 결과가 디스크에 있어야 한다.
                 pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
 
     return pd.DataFrame(rows, columns=COLUMNS)

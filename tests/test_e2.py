@@ -6,7 +6,23 @@ import pandas as pd
 import torch
 
 import experiments.e2_erf as e2
-from experiments.e2_erf import COLUMNS, CONDITIONS, SAMPLE_SIZES, run_erf
+from experiments.e2_erf import CONDITIONS, SAMPLE_SIZES, run_erf
+
+EXPECTED_COLUMNS = [
+    "model",
+    "condition",
+    "n_images",
+    "anisotropy",
+    "anisotropy_central",
+    "anisotropy_converged",
+    "principal_angle_deg",
+    "principal_angle_converged",
+    "decay_ratio",
+    "decay_window",
+    "decay_ratio_converged",
+    "status",
+    "error",
+]
 
 
 def _stub_erf(model_name, model, images, device="cuda"):
@@ -39,7 +55,7 @@ def test_one_row_per_model_condition_and_sample_size(tmp_path, monkeypatch):
     df = run_erf(model_names=("deit_s",), sample_sizes=(2, 4), out_dir=tmp_path)
 
     assert len(df) == 1 * 3 * 2
-    assert list(df.columns) == COLUMNS
+    assert list(df.columns) == EXPECTED_COLUMNS
 
 
 def test_the_erf_maps_are_saved_next_to_the_metrics(tmp_path, monkeypatch):
@@ -82,6 +98,43 @@ def test_env_json_records_the_checkpoint_hashes(tmp_path, monkeypatch):
     assert env["checkpoints"] == {"cmt_s": "abc123"}
 
 
+def test_env_json_records_the_random_init_seed(tmp_path, monkeypatch):
+    """random_init은 매번 새로 무작위 초기화된 모델을 잰다. 어떤 시드로
+    고정했는지 없으면 cls 토큰 가드(질량 반경 비교) 숫자가 재현되지 않는다는
+    사실 자체를 나중에 알아볼 수 없다."""
+    _offline(monkeypatch)
+
+    run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    env = json.loads((tmp_path / "env.json").read_text())
+    assert env["random_init_seed"] == e2.SEED
+
+
+def test_random_init_is_seeded_for_reproducibility(tmp_path, monkeypatch):
+    """random_init 조건은 build_model(..., pretrained=False)가 실행마다 새로
+    무작위 초기화한 모델을 준다. 시드를 걸지 않으면 실행마다 다른 모델을
+    재는 셈이라, 이 실험의 핵심 정직성 장치(랜덤 초기화 vs 학습된 모델의
+    질량 반경 비교)의 숫자가 재현되지 않는다."""
+    captured_weights = []
+
+    def fake_build_model(name, pretrained=True, **kwargs):
+        layer = torch.nn.Linear(3, 3)
+        captured_weights.append(layer.weight.detach().clone())
+        return layer
+
+    _offline(monkeypatch)
+    monkeypatch.setattr(e2, "build_model", fake_build_model)
+
+    run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path / "a")
+    run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path / "b")
+
+    # CONDITIONS 순서는 (natural, noise, random_init)이므로 각 실행에서
+    # build_model이 세 번 불린다 — 세 번째(인덱스 2)가 random_init.
+    first_random_init = captured_weights[2]
+    second_random_init = captured_weights[5]
+    assert torch.equal(first_random_init, second_random_init)
+
+
 def test_the_image_list_is_recorded(tmp_path, monkeypatch):
     """어떤 이미지로 잰 값인지 없으면 재현이 불가능하다."""
     _offline(monkeypatch)
@@ -94,6 +147,8 @@ def test_the_image_list_is_recorded(tmp_path, monkeypatch):
 
 
 def test_a_failing_cell_does_not_lose_the_rest(tmp_path, monkeypatch):
+    """accumulate_erf 자체가 실패하면(원본조차 못 얻음) 그 셀만 status="error"로
+    남고 나머지는 살아남는다 — 가장 심각한 실패 모드다."""
     calls = {"n": 0}
 
     def flaky(*args, **kwargs):
@@ -112,19 +167,21 @@ def test_a_failing_cell_does_not_lose_the_rest(tmp_path, monkeypatch):
     assert pd.read_csv(tmp_path / "erf_metrics.csv").shape[0] == 3
 
 
-def test_a_failing_metric_does_not_lose_the_rest(tmp_path, monkeypatch):
-    """지표 계산(anisotropy_index/principal_angle_deg/decay_ratio)에서 나는
-    예외도 accumulate_erf의 예외와 똑같이 그 셀만 error로 남기고 나머지는
-    살아남아야 한다. 예전엔 이 계산이 try 블록 밖(else 분기)에 있어서 여기서
-    예외가 나면 실행 전체가 죽었다 — cmt_s/noise 실측에서 decay_ratio가 실제로
-    이 경로로 죽어 이후 모델·조건이 통째로 사라진 바 있다."""
+def test_a_failing_metric_leaves_only_that_metric_blank(tmp_path, monkeypatch):
+    """decay_ratio 하나가 던져도 accumulate_erf는 성공했으므로 그 셀은
+    status="ok"로 남아야 한다 — "측정 실패"가 아니라 "이 지표만 정의되지
+    않음"이기 때문이다. anisotropy/principal_angle_deg는 decay_ratio와
+    무관하게 독립적으로 계산되므로 그대로 채워진다. 실패 사유는 error 열에
+    남는다. (예전엔 지표 네 개가 한 try 블록에 묶여 있어 하나가 던지면
+    넷 다, 그리고 그 셀 전체가 status="error"로 사라졌다 — cmt_s/noise
+    실측에서 실제로 이 경로로 맵까지 함께 사라진 바 있다.)"""
     calls = {"n": 0}
 
     def flaky_decay_ratio(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise ValueError("피크가 경계에 너무 가깝다")
-        return 1.0
+        return 1.0, 64
 
     _offline(monkeypatch)
     monkeypatch.setattr(e2, "decay_ratio", flaky_decay_ratio)
@@ -132,8 +189,63 @@ def test_a_failing_metric_does_not_lose_the_rest(tmp_path, monkeypatch):
     df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
 
     assert len(df) == 3
-    assert list(df["status"]).count("error") == 1
-    assert pd.read_csv(tmp_path / "erf_metrics.csv").shape[0] == 3
+    assert list(df["status"]).count("error") == 0
+    failed = df[df["error"].notna()]
+    assert len(failed) == 1
+    assert "decay_ratio" in failed.iloc[0]["error"]
+    assert pd.isna(failed.iloc[0]["decay_ratio"])
+    assert not pd.isna(failed.iloc[0]["anisotropy"])
+    assert not pd.isna(failed.iloc[0]["principal_angle_deg"])
+
+
+def test_the_map_survives_a_metric_failure(tmp_path, monkeypatch):
+    """decay_ratio가 던져도 accumulate_erf가 이미 만든 맵은 npz에 남아야
+    한다. 예전엔 맵 저장이 지표 계산 뒤(성공한 경우에만 실행되는 else
+    분기)에 있어서, decay_ratio 하나의 실패로 원본 맵까지 함께 사라져
+    그림이 실제로 측정된 셀을 "not measured"로 그렸다."""
+    calls = {"n": 0}
+
+    def flaky_decay_ratio(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # CONDITIONS 순서상 noise가 두 번째
+            raise ValueError("피크가 경계에 너무 가깝다")
+        return 1.0, 64
+
+    _offline(monkeypatch)
+    monkeypatch.setattr(e2, "decay_ratio", flaky_decay_ratio)
+
+    run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    maps = np.load(tmp_path / "erf_maps.npz")
+    assert "deit_s__noise__n4" in maps
+
+
+def test_convergence_is_tracked_per_metric(tmp_path, monkeypatch):
+    """세 지표(anisotropy/principal_angle/decay_ratio) 각각 독립적으로
+    수렴 이력을 본다 — 예전엔 anisotropy_index 이력 하나만 보고 통짜
+    converged 열을 채워서, decay_ratio가 계획의 5% 기준으로 전혀
+    수렴하지 않았는데도 anisotropy만 보고 True가 찍힌 적이 있었다."""
+    _offline(monkeypatch)
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8), out_dir=tmp_path)
+
+    natural = df[df["condition"] == "natural"].sort_values("n_images")
+    last = natural.iloc[-1]
+    # _stub_erf가 N과 무관하게 항상 같은 맵을 주므로 두 번째 점에서 세
+    # 지표 모두 상대 변화 0%로 수렴해야 한다.
+    assert bool(last["anisotropy_converged"]) is True
+    assert bool(last["principal_angle_converged"]) is True
+    assert bool(last["decay_ratio_converged"]) is True
+
+
+def test_anisotropy_central_is_recorded(tmp_path, monkeypatch):
+    """중심 128²만 잘라 다시 잰 비등방 지수. 2차 모먼트 지수가 far-field
+    꼬리에 얼마나 좌우되는지를 전체값과 나란히 놓고 봐야 한다."""
+    _offline(monkeypatch)
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    assert df["anisotropy_central"].notna().all()
 
 
 class _FakeVocDir:
