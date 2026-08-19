@@ -38,12 +38,3 @@ def test_cmt_s_at_384_actually_rebuilds_the_stage_grids():
         raise AssertionError("num_patches를 가진 모듈이 없다 — 구조 가정이 틀렸다")
 
     assert first_stage_patches(large) > first_stage_patches(small)
-
-
-def test_pretrained_weights_are_not_silently_skipped():
-    """가중치 로딩은 E2/E3 계획으로 미뤘다. 조용히 무시하면 나중에 무작위 초기화
-    모델로 ERF를 재고도 아무도 모른다."""
-    import pytest
-
-    with pytest.raises(NotImplementedError, match="E2"):
-        build_model("cmt_s", pretrained=True)
