@@ -112,6 +112,30 @@ def test_a_failing_cell_does_not_lose_the_rest(tmp_path, monkeypatch):
     assert pd.read_csv(tmp_path / "erf_metrics.csv").shape[0] == 3
 
 
+def test_a_failing_metric_does_not_lose_the_rest(tmp_path, monkeypatch):
+    """지표 계산(anisotropy_index/principal_angle_deg/decay_ratio)에서 나는
+    예외도 accumulate_erf의 예외와 똑같이 그 셀만 error로 남기고 나머지는
+    살아남아야 한다. 예전엔 이 계산이 try 블록 밖(else 분기)에 있어서 여기서
+    예외가 나면 실행 전체가 죽었다 — cmt_s/noise 실측에서 decay_ratio가 실제로
+    이 경로로 죽어 이후 모델·조건이 통째로 사라진 바 있다."""
+    calls = {"n": 0}
+
+    def flaky_decay_ratio(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("피크가 경계에 너무 가깝다")
+        return 1.0
+
+    _offline(monkeypatch)
+    monkeypatch.setattr(e2, "decay_ratio", flaky_decay_ratio)
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    assert len(df) == 3
+    assert list(df["status"]).count("error") == 1
+    assert pd.read_csv(tmp_path / "erf_metrics.csv").shape[0] == 3
+
+
 class _FakeVocDir:
     """glob("*.jpg")만 흉내내는 가짜 디렉터리. 실제 파일시스템을 건드리지 않는다."""
 

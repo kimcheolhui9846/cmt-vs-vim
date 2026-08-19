@@ -65,10 +65,51 @@ def _log_slope(profile: np.ndarray) -> float:
     return float(np.polyfit(distances, np.log(profile[positive]), 1)[0])
 
 
+MIN_DECAY_WINDOW = 8
+"""log-log 기울기를 적합하는 데 필요한 최소 반경.
+
+이보다 좁은 창에서 낸 기울기 비는 몇 개 점의 잡음에 지배되어 모델 간 비교에 쓸 수
+없다. 8은 임의의 하한이 아니다 — 이 실험이 쓰는 224² 입력의 ViT 계열 patch 크기
+16의 절반으로, 그보다 좁으면 "감쇠 프로파일"이라 부를 만한 표본 자체가 없다.
+"""
+
+
+def _peak(erf: np.ndarray) -> tuple[int, int]:
+    return np.unravel_index(erf.argmax(), erf.shape)
+
+
+def decay_window(erf: np.ndarray, max_distance: int = 64) -> int:
+    """피크에서 상하좌우 네 방향 모두로 배열 밖을 넘지 않는 최대 반경과
+    max_distance 중 작은 값.
+
+    피크가 경계에 가까우면 `decay_ratio`가 `erf[row ± offsets, col]`로 배열 밖을
+    읽는다(IndexError). 이 함수가 실제로 쓸 수 있는 반경을 먼저 계산해 그 사고를
+    막는다. 중심 피크(row=col=112, 224² 배열)에서는 상하좌우 여유가 전부
+    max_distance(64)보다 크므로 그대로 64를 돌려준다 — 기존 동작과 동일하다.
+    """
+    row, col = _peak(erf)
+    n_rows, n_cols = erf.shape
+    up, down = row, n_rows - 1 - row
+    left, right = col, n_cols - 1 - col
+    return int(min(max_distance, up, down, left, right))
+
+
 def decay_ratio(erf: np.ndarray, max_distance: int = 64) -> float:
-    """수직 감쇠 기울기 / 수평 감쇠 기울기. 1보다 크면 수직이 더 가파르다."""
-    row, col = np.unravel_index(erf.argmax(), erf.shape)
-    offsets = np.arange(1, max_distance + 1)
+    """수직 감쇠 기울기 / 수평 감쇠 기울기. 1보다 크면 수직이 더 가파르다.
+
+    피크가 경계에서 `MIN_DECAY_WINDOW`보다 가까우면 조용히 더 좁은 창으로
+    계산하지 않고 ValueError를 던진다 — 반경이 셀마다 다르게 좁아지면 같은 열에
+    반경이 다른 값이 섞여 비교 불가능한 숫자가 된다. 실제로 쓴 반경은
+    `decay_window()`로 따로 조회한다.
+    """
+    row, col = _peak(erf)
+    window = decay_window(erf, max_distance)
+    if window < MIN_DECAY_WINDOW:
+        raise ValueError(
+            f"피크 ({row}, {col})가 경계에서 반경 {window}만큼만 떨어져 있다 "
+            f"(최소 {MIN_DECAY_WINDOW} 필요) — 감쇠 기울기를 신뢰할 수 없다."
+        )
+    offsets = np.arange(1, window + 1)
     horizontal = (erf[row, col + offsets] + erf[row, col - offsets]) / 2
     vertical = (erf[row + offsets, col] + erf[row - offsets, col]) / 2
     return float(_log_slope(vertical) / _log_slope(horizontal))
