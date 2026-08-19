@@ -24,6 +24,10 @@ wandb/
 results/**/*.npy
 results/**/*.npz
 
+# ERF map은 중간 덤프가 아니라 E2의 1차 측정값이다. 그림이 커밋된 데이터에서
+# 나와야 한다는 원칙 때문에 이것만 예외로 추적한다(약 1.2MB).
+!results/e2/erf_maps.npz
+
 # OS / 에디터
 .DS_Store
 Thumbs.db
