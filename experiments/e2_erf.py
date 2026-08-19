@@ -38,11 +38,22 @@ COLUMNS = [
 ]
 
 
-def _images_for(condition: str, n: int) -> torch.Tensor:
+def _images_for(condition: str, n: int, max_n: int) -> torch.Tensor:
+    """condition의 이미지 n장.
+
+    항상 max_n장을 한 번 뽑고 앞에서 n장만 자른다. random.Random(seed).sample은
+    n마다 겹치지 않는 전혀 다른 집합을 주기 때문에 — Random(0).sample(pool, 16)은
+    Random(0).sample(pool, 256)의 부분집합이 아니다 — N마다 새로 뽑으면 이미지
+    집합이 통째로 바뀌어 수렴 곡선이 수렴과 샘플링 변동을 뒤섞는다. 여기서는
+    N을 키울 때 이미지가 추가되기만 해야 순수한 수렴만 보인다.
+    """
     if condition == "noise":
-        return torch.randn(n, 3, 224, 224, generator=torch.Generator().manual_seed(SEED))
-    paths = sample_image_paths(sorted(ensure_voc().glob("*.jpg")), n, seed=SEED)
-    return load_images(paths)
+        pool = torch.randn(
+            max_n, 3, 224, 224, generator=torch.Generator().manual_seed(SEED)
+        )
+        return pool[:n]
+    paths = sample_image_paths(sorted(ensure_voc().glob("*.jpg")), max_n, seed=SEED)
+    return load_images(paths[:n])
 
 
 def _checkpoint_hashes() -> dict[str, str]:
@@ -52,7 +63,13 @@ def _checkpoint_hashes() -> dict[str, str]:
 
 
 def _image_names(n: int) -> list[str]:
-    """실제로 쓴 이미지 파일 이름. results/e2/images.txt에 들어간다."""
+    """실제로 쓴 이미지 파일 이름. results/e2/images.txt에 들어간다.
+
+    run_erf가 항상 max(sample_sizes)로 호출하므로, 이 목록의 앞에서 n장을 자른
+    것이 _images_for(condition, n, max_n)이 natural/random_init에 실제로 쓰는
+    이미지와 같다 — 둘 다 같은 seed로 같은 개수(max_n)를 sample_image_paths에
+    요청한다.
+    """
     paths = sample_image_paths(sorted(ensure_voc().glob("*.jpg")), n, seed=SEED)
     return [path.name for path in paths]
 
@@ -65,12 +82,16 @@ def run_erf(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    max_n = max(sample_sizes)
 
     env = snapshot()
     env["checkpoints"] = _checkpoint_hashes()
     env["seed"] = SEED
     (out_dir / "env.json").write_text(json.dumps(env, indent=2))
-    (out_dir / "images.txt").write_text("\n".join(_image_names(max(sample_sizes))))
+    (out_dir / "images.txt").write_text("\n".join(_image_names(max_n)))
+
+    csv_path = out_dir / "erf_metrics.csv"
+    maps_path = out_dir / "erf_maps.npz"
 
     rows: list[dict] = []
     maps: dict[str, np.ndarray] = {}
@@ -84,27 +105,26 @@ def run_erf(
                 row.update(model=name, condition=condition, n_images=n, status="ok")
                 try:
                     erf = accumulate_erf(
-                        name, model, _images_for(condition, n), device=device
+                        name, model, _images_for(condition, n, max_n), device=device
                     )
-                except Exception as exc:  # 한 조건의 실패로 전체를 잃지 않는다
+                except Exception as exc:  # 한 셀의 실패로 전체를 잃지 않는다
                     row.update(status="error", error=f"{type(exc).__name__}: {exc}")
-                    rows.append(row)
-                    continue
+                else:
+                    history.append(anisotropy_index(erf))
+                    row.update(
+                        anisotropy=history[-1],
+                        principal_angle_deg=principal_angle_deg(erf),
+                        decay_ratio=decay_ratio(erf),
+                        converged=has_converged(history),
+                    )
+                    maps[f"{name}__{condition}__n{n}"] = erf
+                    np.savez_compressed(maps_path, **maps)
 
-                history.append(anisotropy_index(erf))
-                row.update(
-                    anisotropy=history[-1],
-                    principal_angle_deg=principal_angle_deg(erf),
-                    decay_ratio=decay_ratio(erf),
-                    converged=has_converged(history),
-                )
                 rows.append(row)
-                maps[f"{name}__{condition}"] = erf
-
-            pd.DataFrame(rows, columns=COLUMNS).to_csv(
-                out_dir / "erf_metrics.csv", index=False
-            )
-            np.savez_compressed(out_dir / "erf_maps.npz", **maps)
+                # 셀마다 다시 쓴다. 긴 실행이 도중에 죽어도 앞의 결과는 남는다.
+                # try/except는 파이썬 예외만 잡는다 — OOM 킬러나 드라이버 크래시는
+                # 못 잡으므로, 그 순간까지의 결과가 디스크에 있어야 한다.
+                pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
 
     return pd.DataFrame(rows, columns=COLUMNS)
 
