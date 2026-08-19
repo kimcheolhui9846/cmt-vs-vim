@@ -13,8 +13,9 @@ EXPECTED_COLUMNS = [
     "condition",
     "n_images",
     "anisotropy",
-    "anisotropy_central",
     "anisotropy_converged",
+    "anisotropy_central",
+    "anisotropy_central_converged",
     "principal_angle_deg",
     "principal_angle_converged",
     "decay_ratio",
@@ -221,31 +222,48 @@ def test_the_map_survives_a_metric_failure(tmp_path, monkeypatch):
 
 
 def test_convergence_is_tracked_per_metric(tmp_path, monkeypatch):
-    """세 지표(anisotropy/principal_angle/decay_ratio) 각각 독립적으로
-    수렴 이력을 본다 — 예전엔 anisotropy_index 이력 하나만 보고 통짜
-    converged 열을 채워서, decay_ratio가 계획의 5% 기준으로 전혀
-    수렴하지 않았는데도 anisotropy만 보고 True가 찍힌 적이 있었다."""
+    """네 지표(anisotropy/anisotropy_central/principal_angle/decay_ratio) 각각
+    독립적으로 수렴 이력을 본다. 예전엔 anisotropy_index 이력 하나만 보고
+    통짜 converged 열을 채워서, decay_ratio가 계획의 5% 기준으로 전혀
+    수렴하지 않았는데도 anisotropy만 보고 True가 찍힌 적이 있었다(Critical 1).
+
+    이 결함은 "네 지표가 전부 같이 움직이는" 스텁으로는 재현되지 않는다 —
+    그 경우 넷 다 우연히 같은 방향으로 수렴/미수렴해서 통짜 열이든 지표별
+    열이든 결과가 똑같아 보인다. 여기서는 한쪽(anisotropy)은 매 N마다 5배씩
+    계속 벌어지게, 다른 쪽(principal_angle/decay_ratio)은 매번 완전히 같은
+    값을 주게 만들어 실제로 갈라놓는다."""
     _offline(monkeypatch)
 
-    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8), out_dir=tmp_path)
+    # anisotropy_index는 한 셀에서 두 번 불린다(전체 맵, 중심 크롭). 둘 다 같은
+    # 발산 시퀀스를 쓰게 해서 anisotropy_converged와 anisotropy_central_converged
+    # 둘 다 미수렴 상태를 유지하는지 함께 확인한다.
+    diverging = iter([1.0, 1.0, 5.0, 5.0, 25.0, 25.0])
+    monkeypatch.setattr(e2, "anisotropy_index", lambda erf: next(diverging))
+    monkeypatch.setattr(e2, "principal_angle_deg", lambda erf: 30.0)
+    monkeypatch.setattr(e2, "decay_ratio", lambda erf: (1.0, 64))
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8, 16), out_dir=tmp_path)
 
     natural = df[df["condition"] == "natural"].sort_values("n_images")
     last = natural.iloc[-1]
-    # _stub_erf가 N과 무관하게 항상 같은 맵을 주므로 두 번째 점에서 세
-    # 지표 모두 상대 변화 0%로 수렴해야 한다.
-    assert bool(last["anisotropy_converged"]) is True
+    # 5.0 -> 25.0은 +400% 변화라 anisotropy 계열은 계속 미수렴이어야 한다.
+    assert bool(last["anisotropy_converged"]) is False
+    assert bool(last["anisotropy_central_converged"]) is False
+    # 매번 같은 값을 주는 두 지표는 상대 변화 0%로 즉시 수렴해야 한다.
     assert bool(last["principal_angle_converged"]) is True
     assert bool(last["decay_ratio_converged"]) is True
 
 
 def test_anisotropy_central_is_recorded(tmp_path, monkeypatch):
-    """중심 128²만 잘라 다시 잰 비등방 지수. 2차 모먼트 지수가 far-field
-    꼬리에 얼마나 좌우되는지를 전체값과 나란히 놓고 봐야 한다."""
+    """중심 128²만 잘라 다시 잰 비등방 지수와 그 수렴 플래그. 2차 모먼트
+    지수가 far-field 꼬리에 얼마나 좌우되는지를 전체값과 나란히 놓고 봐야
+    하고, 다른 세 지표와 마찬가지로 수렴 여부도 독립적으로 남아야 한다."""
     _offline(monkeypatch)
 
-    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8), out_dir=tmp_path)
 
     assert df["anisotropy_central"].notna().all()
+    assert df["anisotropy_central_converged"].notna().all()
 
 
 class _FakeVocDir:

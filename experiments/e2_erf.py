@@ -31,8 +31,9 @@ COLUMNS = [
     "condition",
     "n_images",
     "anisotropy",
-    "anisotropy_central",
     "anisotropy_converged",
+    "anisotropy_central",
+    "anisotropy_central_converged",
     "principal_angle_deg",
     "principal_angle_converged",
     "decay_ratio",
@@ -109,6 +110,7 @@ def run_erf(
     for name in model_names:
         for condition in CONDITIONS:
             ani_history: list[float] = []
+            central_history: list[float] = []
             angle_history: list[float] = []
             decay_history: list[float] = []
             if condition == "random_init":
@@ -141,10 +143,12 @@ def run_erf(
                     ai = anisotropy_index(erf)
                     ai_central = anisotropy_index(central_crop(erf))
                     ani_history.append(ai)
+                    central_history.append(ai_central)
                     row.update(
                         anisotropy=ai,
-                        anisotropy_central=ai_central,
                         anisotropy_converged=has_converged(ani_history),
+                        anisotropy_central=ai_central,
+                        anisotropy_central_converged=has_converged(central_history),
                     )
                 except Exception as exc:
                     errors.append(f"anisotropy: {type(exc).__name__}: {exc}")

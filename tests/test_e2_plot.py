@@ -16,9 +16,14 @@ BASE = {
     "condition": "natural",
     "n_images": 256,
     "anisotropy": 1.42,
+    "anisotropy_converged": True,
+    "anisotropy_central": 1.50,
+    "anisotropy_central_converged": True,
     "principal_angle_deg": 3.1,
+    "principal_angle_converged": True,
     "decay_ratio": 1.8,
-    "converged": True,
+    "decay_window": 64,
+    "decay_ratio_converged": True,
     "status": "ok",
     "error": None,
 }
@@ -44,13 +49,16 @@ def test_final_metrics_takes_the_largest_sample_size():
 
 def test_unconverged_rows_are_kept_and_flagged():
     """수렴하지 않은 값을 버리면 '왜 빈칸인지 알 수 없는 표'가 된다. 남기되
-    수렴 여부를 함께 싣는다."""
-    df = pd.DataFrame([_row(converged=False)])
+    수렴 여부를 함께 싣는다. 수렴은 지표마다 독립적으로 판단되므로(하나가
+    수렴해도 다른 게 계속 움직일 수 있다), decay_ratio_converged 하나만
+    False로 두고 나머지는 BASE의 True 그대로 둔다."""
+    df = pd.DataFrame([_row(decay_ratio_converged=False)])
 
     final = final_metrics(df)
 
     assert len(final) == 1, "수렴하지 않은 행이 표에서 사라졌다"
-    assert bool(final.iloc[0]["converged"]) is False
+    assert bool(final.iloc[0]["decay_ratio_converged"]) is False
+    assert bool(final.iloc[0]["anisotropy_converged"]) is True
 
 
 def test_failed_rows_never_reach_the_table():
