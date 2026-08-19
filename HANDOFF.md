@@ -36,8 +36,9 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 ## 현재 상태
 
 - 브랜치: `feat/e1-resolution-sweep` (main에 머지 안 됨, 원격에 푸시됨)
-- 테스트: **48건 전부 통과** (timm deprecation 경고 3건만 남음 — 무해)
-- 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크)
+- 테스트: **97건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
+  `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
+- 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크 **전부 완료**)
 - SDD 원장: `.superpowers/sdd/2026-08-18-e1-resolution-sweep/progress.md` — git-ignored,
   태스크별 완료·수정 라운드·이월된 minor가 전부 기록돼 있다
 
@@ -45,50 +46,39 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 
 | Task | 산출물 | 비고 |
 |------|--------|------|
+| 1 | `tests/test_smoke.py`, `requirements.txt` | 고정 환경 구축. skip 없이 하드 실패하는 3건 |
 | 2 | `bench/env.py` | 환경 스냅샷 (GPU·드라이버·torch·CUDA·git commit) |
-| 3 | `bench/flops.py` | FLOPs + **미등록 연산 보고** |
-| 4 | `bench/latency.py` | CUDA event 계측 |
+| 3 | `bench/flops.py` | FLOPs + **미등록 연산 보고**, traced/analytic 분리 |
+| 4 | `bench/latency.py` | CUDA event 계측 + **반복 측정** |
 | 5 | `bench/memory.py` | peak VRAM(allocated/reserved 둘 다) + OOM을 데이터로 |
 | 6 | `models/registry.py` | `build_model` 단일 진입점, DeiT-S |
 | 7 | `models/cmt.py`, `cmt_official.py` | CMT-S (upstream 바이트 동일 벤더링) |
+| 8 | `models/vim.py`, `vim_official.py`, `rope.py` | Vim-S + fused op FLOPs 핸들러 |
 | 9 | `bench/throughput.py` | 최대 배치 이진 탐색 + 처리량 |
 | 10 | `experiments/e1_resolution_sweep.py` | sweep 오케스트레이션 |
-| 12 | `figures/e1_plot.py` | CSV → 4패널 그림 |
+| 11 | `tests/test_sanity.py` | DeiT-S 공개값 4.6G 대조 (실측 4.6083G, 비율 1.002) |
+| 12 | `figures/e1_plot.py` | CSV → 5패널 그림 |
+| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`) |
 
-Task 8, 11이 없으므로 `build_model("vim_s")`는 아직 `NotImplementedError`를 던진다.
-`experiments/e1_resolution_sweep.py`를 그냥 실행하면 vim_s 5셀이 `status="error"`
-행으로 기록된다 — 죽지는 않지만 그 CSV는 불완전하다.
+## 고정 측정 환경 (구축 완료)
 
-### 남은 태스크 — 전부 WSL2 필요
+WSL2 Ubuntu 위에 conda 환경 `/opt/conda/envs/e1`로 만들어 뒀다. 전체 핀과 빌드
+절차는 `requirements.txt`에 있다 — causal_conv1d는 PyPI sdist에 `csrc/`가 없어
+GitHub 태그에서, mamba는 stock mamba-ssm이 아니라 Vim 포크(`mamba-1p1p1`)에서
+빌드해야 한다. 그 파일을 읽지 않고 재구축하려 들면 하루를 잃는다.
 
-| Task | 내용 | 막힌 이유 |
-|------|------|-----------|
-| 1 | 스모크 테스트 | `mamba_ssm` import + CUDA 커널 실행 확인 |
-| 8 | Vim-S 통합 + selective scan FLOPs 핸들러 | 같음 |
-| 11 | sanity check (DeiT-S 4.6G 대조) | vim_s 포함 파라미터화라 Task 8 의존 |
-| 13 | 고정 환경에서 실측 실행 | Task 1·8·11 전부 선행 |
-
-**순서: 1 → 8 → 11 → 13.**
-
-## 선행 조건 — WSL2 설치
-
-컨트롤러 세션이 비관리자라 대신 설치할 수 없다. 사용자가 직접:
+Linux가 필요한 이유는 Vision Mamba의 selective scan CUDA 커널이다. 순수 PyTorch로
+대체하면 5~10배 느려져 latency 측정이 무의미해진다.
 
 ```
-시작 메뉴 → PowerShell 우클릭 → "관리자 권한으로 실행"
-wsl --install
-(재부팅)
+Python  3.10.13    torch 2.1.1+cu118    CUDA 11.8
+timm    0.9.12     mamba-1p1p1 (Vim 포크)    causal_conv1d 1.1.0
+RTX 3070 Ti (sm_86), 드라이버 591.86
 ```
 
-설치 후 WSL2 안에서 고정 툴체인을 만든다. Vision Mamba의 selective scan CUDA 커널이
-Linux를 요구하며, 순수 PyTorch로 대체하면 5~10배 느려져 latency 측정이 무의미해진다.
-
-```
-Python  3.10.13
-torch   2.1.1+cu118
-causal_conv1d >= 1.1.0
-mamba-1p1p1
-```
+저장소 명령을 이 환경에서 돌리는 래퍼는 스크래치패드의 `wsl/run.sh`에 있다.
+없으면 다시 만들면 된다 — `CUDA_HOME`·`PATH`·`LD_LIBRARY_PATH`를 위 env로 잡고
+`CC=gcc-11`을 걸어 저장소 루트에서 실행하는 8줄짜리다.
 
 ## 다음 세션에서 반드시 알아야 할 것
 
@@ -150,6 +140,30 @@ PNG에 네모 상자로 찍힌다. 코드 주석과 docstring은 한글 그대�
 CMT-S 공식 구현의 실제 파라미터는 **26.26M**이다. 논문 3.3절은 "동일한 25M 이하 파라미터
 규모"라고 쓰는데 원논문 보고치(25.1M)와 공식 구현이 어긋난다. E1이 실측 파라미터를 CSV에
 남기므로 개정 시 이 문장을 실측에 맞출 것.
+
+### 5. latency 반복 측정 — 실행 안의 편차는 작고, 실행 사이의 편차가 크다
+
+`bench/latency.py`가 측정 블록(워밍업 50 + 계측 100)을 3번 반복하고, sweep이
+`latency_min_ms`·`latency_max_ms`·`latency_repeats_ms`를 CSV에 남긴다. 반복마다
+워밍업을 다시 도는 게 핵심이다 — 밖으로 빼면 첫 블록이 만든 클럭·할당자 상태를
+물려받아 편차가 측정에서 지워진다.
+
+**그런데 이 반복은 잡으려던 것을 잡지 못했다.** 한 프로세스 안의 반복은 전부
+잘 맞는다(최대 1.10배, 15셀 중 12셀이 1.03배 이내). 반면 같은 셀을 서로 다른
+실행에서 잰 값은 vim_s@224에서 30.005 ms와 18.134 ms로 **1.66배** 갈렸다.
+
+| | 최대 편차 | 어디서 |
+|---|---|---|
+| 실행 안 (반복 3회) | 1.10배 | deit_s@224 |
+| 실행 사이 (독립 sweep 2회) | 1.66배 | vim_s@224 |
+
+즉 배치 1 latency의 불확실성은 프로세스 경계에 있다. `LATENCY_SPREAD_WARN = 1.2`
+경고는 이번 실행에서 한 번도 뜨지 않았는데, 그게 "재현된다"는 뜻이 아니다.
+
+**논문에 쓸 때**: 저해상도(224²·384²) latency를 단일 값으로 인용하지 말 것.
+768² 이상은 실행 안·사이 모두 1.04배 이내라 안전하다. 이 문제를 정면으로 풀려면
+sweep을 독립 프로세스로 여러 번 돌려 합쳐야 하고, 그건 GPU 시간이 배로 든다 —
+아직 결정하지 않았다.
 
 ## 이 계획 이후
 
