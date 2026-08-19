@@ -186,6 +186,6 @@ E2·E3부터는 사전학습 체크포인트가 필요하다.
 
 | 모델 | 파라미터 | ImageNet Top-1 | 출처 |
 |------|----------|----------------|------|
-| CMT-Small | 26.26M(실측) | 83.5% | huawei-noah/Efficient-AI-Backbones Releases |
+| CMT-Small | 26.26M(실측) | 83.5% | ggjy/CMT.pytorch Releases |
 | Vim-S | 26M | 80.5% | hustvl/Vim (HuggingFace) |
 | DeiT-S | 22.05M(실측) | 79.8% | timm |

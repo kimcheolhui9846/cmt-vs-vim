@@ -120,7 +120,7 @@ Vim은 cls 토큰이 시퀀스 *중앙*에 있어서(Vim의 middle cls 설계) �
 | 모델 | 출처 |
 |------|------|
 | DeiT-S | timm (`deit_small_patch16_224`) |
-| CMT-S | huawei-noah/Efficient-AI-Backbones GitHub Releases |
+| CMT-S | ggjy/CMT.pytorch GitHub Releases |
 | Vim-S | hustvl/Vim (HuggingFace) |
 
 체크포인트는 `checkpoints/`에 받고 git에 넣지 않는다(이미 `.gitignore`에 있다).
