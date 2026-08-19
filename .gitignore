@@ -7,7 +7,9 @@ venv/
 
 # 체크포인트와 데이터셋 — 용량이 커서 추적하지 않는다
 checkpoints/
-data/
+data/*
+!data/__init__.py
+!data/voc.py
 *.pth
 *.pt
 *.safetensors
