@@ -12,12 +12,19 @@ import torch
 from bench.budget import apply_memory_budget
 from bench.env import snapshot
 from bench.flops import count_flops
-from bench.latency import measure_latency
+from bench.latency import LatencyResult, measure_latency
 from bench.memory import is_oom, measure_peak_memory
 from bench.throughput import measure_throughput
 from models.registry import MODEL_NAMES, build_model, traceable
 
 RESOLUTIONS = (224, 384, 512, 768, 1024)
+
+# 배치 1 latency는 커널 실행 오버헤드에 좌우돼 같은 조건에서도 값이 달라진다.
+# 한 셀을 여러 블록으로 나눠 재고 그 편차를 CSV에 남긴다.
+LATENCY_REPEATS = 3
+
+# 반복 간 최대/최소 비가 이 값을 넘으면 그 셀은 단일 값으로 인용할 수 없다.
+LATENCY_SPREAD_WARN = 1.2
 
 COLUMNS = [
     "model",
@@ -29,6 +36,9 @@ COLUMNS = [
     "flops_uncounted_ops",
     "flops_unexpected_ops",
     "latency_ms",
+    "latency_min_ms",
+    "latency_max_ms",
+    "latency_repeats_ms",
     "peak_allocated_bytes",
     "peak_reserved_bytes",
     "max_batch",
@@ -63,6 +73,7 @@ def _blank_row(model_name: str, resolution: int) -> dict:
         resolution=resolution,
         flops_uncounted_ops="",
         flops_unexpected_ops="",
+        latency_repeats_ms="",
     )
     return row
 
@@ -126,16 +137,25 @@ def _measure_one(model_name: str, resolution: int) -> dict:
 
     # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
     # 1024²에서 150 iteration을 두 번 돌게 된다.
-    captured: dict[str, float] = {}
+    captured: dict[str, LatencyResult] = {}
 
     def _timed_run() -> None:
-        captured["latency_ms"] = measure_latency(model, shape, device=device)
+        captured["latency"] = measure_latency(
+            model, shape, device=device, repeats=LATENCY_REPEATS
+        )
 
     memory = measure_peak_memory(_timed_run)
     row["peak_allocated_bytes"] = memory.peak_allocated_bytes
     row["peak_reserved_bytes"] = memory.peak_reserved_bytes
     row["status"] = memory.status
-    row["latency_ms"] = captured.get("latency_ms")
+
+    latency = captured.get("latency")
+    if latency is not None:
+        row["latency_ms"] = latency.median_ms
+        row["latency_min_ms"] = latency.min_ms
+        row["latency_max_ms"] = latency.max_ms
+        # 원본을 남긴다. 요약값 셋은 전부 여기서 다시 계산할 수 있어야 한다.
+        row["latency_repeats_ms"] = ";".join(f"{v:.4f}" for v in latency.repeats_ms)
 
     if memory.status == "oom":
         return row
@@ -198,7 +218,34 @@ def run_sweep(
         cells = ", ".join(f"{r.model}@{r.resolution}" for r in failed.itertuples())
         print(f"경고: {len(failed)}개 셀 실패 — {cells}. 숫자를 쓰기 전에 확인할 것.")
 
+    _warn_unreproducible_latency(df)
+
     return df
+
+
+def _warn_unreproducible_latency(df: pd.DataFrame) -> None:
+    """반복이 갈린 셀을 실행 끝에 이름으로 부른다.
+
+    편차를 열에만 적어 두면 아무도 열지 않는다. 배치 1 latency는 커널 실행
+    오버헤드에 좌우돼서 이 경고가 뜨는 게 정상에 가깝다 — 그 셀의 값을 표에
+    단일 숫자로 싣지 않는 것이 목적이다.
+    """
+    low = pd.to_numeric(df["latency_min_ms"], errors="coerce")
+    high = pd.to_numeric(df["latency_max_ms"], errors="coerce")
+    spread = high / low.where(low > 0)
+
+    shaky = df[spread > LATENCY_SPREAD_WARN]
+    if shaky.empty:
+        return
+
+    cells = ", ".join(
+        f"{row.model}@{row.resolution} {spread[i]:.2f}배"
+        for i, row in zip(shaky.index, shaky.itertuples())
+    )
+    print(
+        f"경고: latency가 반복 간에 갈린 셀 {len(shaky)}개 — {cells}. "
+        "이 셀은 표에 단일 값으로 싣지 말 것."
+    )
 
 
 if __name__ == "__main__":

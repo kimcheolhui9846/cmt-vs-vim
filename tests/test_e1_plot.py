@@ -4,6 +4,8 @@ import pytest
 from figures.e1_plot import (
     ANALYTIC_SHARE_COLUMN,
     PANELS,
+    error_bar_offsets,
+    error_spans,
     missing_cells,
     plot_sweep,
     plotted_series,
@@ -20,6 +22,9 @@ BASE_ROW = {
     "flops_uncounted_ops": "",
     "flops_unexpected_ops": "",
     "latency_ms": 5.0,
+    "latency_min_ms": 4.5,
+    "latency_max_ms": 6.0,
+    "latency_repeats_ms": "4.5000;6.0000;5.0000",
     "peak_allocated_bytes": 1_000_000,
     "peak_reserved_bytes": 2_000_000,
     "max_batch": 32,
@@ -30,6 +35,9 @@ BASE_ROW = {
 
 UNMEASURED = {
     "latency_ms": None,
+    "latency_min_ms": None,
+    "latency_max_ms": None,
+    "latency_repeats_ms": "",
     "peak_allocated_bytes": None,
     "peak_reserved_bytes": None,
     "max_batch": None,
@@ -179,7 +187,7 @@ def test_analytic_share_panel_is_linear_not_log():
     DeiT·CMT의 비중이 정확히 0이므로, 이 패널이 log면 '전부 측정값'이라는 사실이
     그림에서 사라진다. 다른 패널은 자릿수가 커서 log가 맞다.
     """
-    panels = {column: yscale for column, _, _, _, yscale in PANELS}
+    panels = {column: yscale for column, _, _, _, yscale, _ in PANELS}
     assert panels[ANALYTIC_SHARE_COLUMN] == "linear"
     assert panels["flops_total"] == "log"
 
@@ -194,3 +202,70 @@ def test_analytic_share_panel_is_drawn(tmp_path):
     out = plot_sweep(csv, tmp_path / "e1.png")
 
     assert out.exists()
+
+
+# --- latency 반복 편차 --------------------------------------------------------
+
+
+def test_error_spans_carry_the_repeat_range():
+    df = _frame([_row(resolution=224, latency_min_ms=16.67, latency_max_ms=30.0)])
+
+    spans = error_spans(df, "latency_min_ms", "latency_max_ms")
+
+    assert spans == {"deit_s": {224: (16.67, 30.0)}}
+
+
+def test_error_spans_skip_cells_that_were_not_measured():
+    """편차가 없는 셀을 (0, 0)으로 채우면 그림에서 '완벽히 재현됨'으로 읽힌다."""
+    df = _frame([_row(resolution=1024, status="oom", **UNMEASURED)])
+
+    assert error_spans(df, "latency_min_ms", "latency_max_ms") == {}
+
+
+def test_offsets_are_distances_from_the_plotted_value():
+    """matplotlib의 yerr는 값에서의 거리다. 절대 좌표를 넘기면 막대가 엉뚱한
+    곳에 그려지는데, 그림만 봐서는 틀린 줄 모른다."""
+    points = [(224, 18.0)]
+    spans = {224: (16.67, 30.0)}
+
+    lower, upper = error_bar_offsets(points, spans, scale=1.0)
+
+    assert lower == pytest.approx([18.0 - 16.67])
+    assert upper == pytest.approx([30.0 - 18.0])
+
+
+def test_offsets_follow_the_panel_scale():
+    lower, upper = error_bar_offsets([(224, 2.0)], {224: (1.0, 4.0)}, scale=2.0)
+
+    assert lower == pytest.approx([0.5])
+    assert upper == pytest.approx([1.0])
+
+
+def test_a_point_without_a_span_gets_no_bar():
+    """반복 열이 없던 시절의 CSV도 그림은 나와야 한다 — 막대만 없으면 된다."""
+    lower, upper = error_bar_offsets([(224, 5.0)], {}, scale=1.0)
+
+    assert lower == [0.0]
+    assert upper == [0.0]
+
+
+def test_only_the_latency_panel_declares_bounds():
+    bounds = {column: bound for column, _, _, _, _, bound in PANELS}
+
+    assert bounds["latency_ms"] == ("latency_min_ms", "latency_max_ms")
+    assert bounds["flops_total"] is None
+
+
+def test_draws_a_figure_with_latency_bars(tmp_path):
+    csv = _write_csv(
+        tmp_path / "sweep.csv",
+        [
+            _row(resolution=224, latency_min_ms=16.67, latency_max_ms=30.0),
+            _row(resolution=384, latency_min_ms=25.0, latency_max_ms=26.0),
+        ],
+    )
+
+    out = plot_sweep(csv, tmp_path / "e1.png")
+
+    assert out.exists()
+    assert out.stat().st_size > 0

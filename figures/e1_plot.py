@@ -13,15 +13,19 @@ import pandas as pd
 
 ANALYTIC_SHARE_COLUMN = "flops_analytic_share"
 
-# (열, 제목, 나눌 값, 단위, y축). y축을 패널마다 선언하는 이유는 analytic 비중이
-# 정확히 0인 모델(DeiT·CMT)이 있기 때문이다 — log 축은 0을 그리지 못해서, 그 패널만
-# log로 두면 "이 모델은 전부 측정값"이라는 사실이 그림에서 사라진다.
+LATENCY_BOUNDS = ("latency_min_ms", "latency_max_ms")
+
+# (열, 제목, 나눌 값, 단위, y축, 오차막대 열). y축을 패널마다 선언하는 이유는
+# analytic 비중이 정확히 0인 모델(DeiT·CMT)이 있기 때문이다 — log 축은 0을 그리지
+# 못해서, 그 패널만 log로 두면 "이 모델은 전부 측정값"이라는 사실이 그림에서
+# 사라진다. 오차막대는 latency에만 붙는다. 반복 측정을 하는 값이 그것뿐이고,
+# 재현되지 않는 것도 그것뿐이다.
 PANELS = [
-    ("flops_total", "FLOPs", 1e9, "GFLOPs", "log"),
-    ("latency_ms", "Latency", 1.0, "ms", "log"),
-    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB", "log"),
-    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB", "log"),
-    (ANALYTIC_SHARE_COLUMN, "Analytic share of FLOPs", 0.01, "%", "linear"),
+    ("flops_total", "FLOPs", 1e9, "GFLOPs", "log", None),
+    ("latency_ms", "Latency", 1.0, "ms", "log", LATENCY_BOUNDS),
+    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB", "log", None),
+    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB", "log", None),
+    (ANALYTIC_SHARE_COLUMN, "Analytic share of FLOPs", 0.01, "%", "linear", None),
 ]
 
 # 측정되지 않은 셀은 색과 문구로 이유를 말한다. 0으로 그리지 않는다.
@@ -70,6 +74,55 @@ def plotted_series(df: pd.DataFrame, column: str) -> dict[str, list[tuple[int, f
     return series
 
 
+def error_spans(
+    df: pd.DataFrame, low_column: str, high_column: str
+) -> dict[str, dict[int, tuple[float, float]]]:
+    """모델별 {해상도: (최소, 최대)}. 해상도로 키를 잡아 값과 짝짓는다.
+
+    리스트 두 개를 순서로 맞추면, 한쪽에만 빠진 셀이 있을 때 막대가 조용히 옆
+    점으로 밀린다. 그림은 멀쩡해 보이고 틀린 값이 논문에 들어간다.
+    """
+    if low_column not in df.columns or high_column not in df.columns:
+        return {}
+
+    spans: dict[str, dict[int, tuple[float, float]]] = {}
+
+    for model, group in df.groupby("model"):
+        usable = group[
+            (group["status"] == "ok")
+            & group[low_column].notna()
+            & group[high_column].notna()
+        ]
+        found = {
+            int(row.resolution): (
+                float(getattr(row, low_column)),
+                float(getattr(row, high_column)),
+            )
+            for row in usable.itertuples()
+        }
+        if found:
+            spans[str(model)] = found
+
+    return spans
+
+
+def error_bar_offsets(
+    points: list[tuple[int, float]],
+    spans: dict[int, tuple[float, float]],
+    scale: float,
+) -> list[list[float]]:
+    """matplotlib의 yerr 형식 — 그린 값에서의 거리, 축 단위로."""
+    lower: list[float] = []
+    upper: list[float] = []
+
+    for resolution, value in points:
+        low, high = spans.get(resolution, (value, value))
+        lower.append(max(0.0, (value - low) / scale))
+        upper.append(max(0.0, (high - value) / scale))
+
+    return [lower, upper]
+
+
 def missing_cells(df: pd.DataFrame) -> list[tuple[int, str, str]]:
     """측정되지 않은 셀 (해상도, 모델, 상태). 해상도 오름차순."""
     unmeasured = df[df["status"].isin(MISSING_STATUSES)]
@@ -94,14 +147,17 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
     fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
     unmeasured = missing_cells(df)
 
-    for ax, (column, title, scale, unit, yscale) in zip(axes, PANELS):
+    for ax, (column, title, scale, unit, yscale, bounds) in zip(axes, PANELS):
         series = plotted_series(df, column)
+        spans = error_spans(df, *bounds) if bounds else {}
 
         for model, points in series.items():
-            ax.plot(
+            ax.errorbar(
                 [resolution for resolution, _ in points],
                 [value / scale for _, value in points],
+                yerr=error_bar_offsets(points, spans.get(model, {}), scale),
                 marker="o",
+                capsize=3,
                 label=model,
             )
 

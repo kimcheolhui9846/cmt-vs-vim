@@ -1,6 +1,9 @@
 import pandas as pd
 
+import pytest
+
 import experiments.e1_resolution_sweep as e1
+from bench.latency import LatencyResult
 from bench.memory import MemoryResult
 from experiments.e1_resolution_sweep import COLUMNS, RESOLUTIONS, run_sweep
 
@@ -14,6 +17,9 @@ EXPECTED_COLUMNS = [
     "flops_uncounted_ops",
     "flops_unexpected_ops",
     "latency_ms",
+    "latency_min_ms",
+    "latency_max_ms",
+    "latency_repeats_ms",
     "peak_allocated_bytes",
     "peak_reserved_bytes",
     "max_batch",
@@ -163,3 +169,70 @@ def test_throughput_oom_keeps_what_was_already_measured(tmp_path, monkeypatch):
     assert row["params"] > 0
     assert pd.isna(row["max_batch"]), "재지 못한 처리량이 값처럼 남았다"
     assert "out of memory" in str(row["error"])
+
+
+# --- latency 반복 측정 --------------------------------------------------------
+
+
+def test_records_every_latency_repeat_not_just_the_median(tmp_path, monkeypatch):
+    """배치 1 latency는 다시 재면 값이 달라진다 — vim_s@224가 30.00 ms와 16.67 ms로
+    갈렸다. 중앙값만 남기면 그 사실이 CSV에서 사라져서, 표를 읽는 사람이 재현되지
+    않는 숫자를 재현되는 숫자로 읽는다."""
+    monkeypatch.setattr(e1, "apply_memory_budget", lambda: 1234)
+    monkeypatch.setattr(
+        e1, "measure_latency", lambda *a, **k: LatencyResult((16.67, 30.0, 18.0))
+    )
+
+    df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+    row = df.iloc[0]
+
+    assert row["latency_ms"] == pytest.approx(18.0)
+    assert row["latency_min_ms"] == pytest.approx(16.67)
+    assert row["latency_max_ms"] == pytest.approx(30.0)
+
+    recorded = [float(v) for v in str(row["latency_repeats_ms"]).split(";")]
+    assert recorded == pytest.approx([16.67, 30.0, 18.0])
+
+
+def test_the_sweep_actually_repeats(tmp_path, monkeypatch):
+    """열만 만들어 두고 1회만 재면 편차가 항상 0으로 나온다 — 측정하지 않은 것을
+    '편차 없음'으로 보고하는 셈이다."""
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen["repeats"] = kwargs.get("repeats")
+        return LatencyResult((1.0,))
+
+    monkeypatch.setattr(e1, "apply_memory_budget", lambda: 1234)
+    monkeypatch.setattr(e1, "measure_latency", spy)
+    run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
+    assert e1.LATENCY_REPEATS > 1
+    assert seen["repeats"] == e1.LATENCY_REPEATS
+
+
+def test_warns_when_the_repeats_disagree(tmp_path, monkeypatch, capsys):
+    """편차를 열에만 적어 두면 아무도 안 본다. 실행이 끝날 때 어느 셀이 재현되지
+    않았는지 말해야, 그 숫자가 표에 단일 값으로 실리는 걸 막을 수 있다."""
+    monkeypatch.setattr(e1, "apply_memory_budget", lambda: 1234)
+    monkeypatch.setattr(
+        e1, "measure_latency", lambda *a, **k: LatencyResult((16.67, 30.0, 18.0))
+    )
+
+    run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+    out = capsys.readouterr().out
+
+    assert "deit_s@224" in out
+    assert "1.80" in out
+
+
+def test_reproducible_cells_are_not_flagged(tmp_path, monkeypatch, capsys):
+    """전부 경고하면 경고가 의미를 잃는다."""
+    monkeypatch.setattr(e1, "apply_memory_budget", lambda: 1234)
+    monkeypatch.setattr(
+        e1, "measure_latency", lambda *a, **k: LatencyResult((10.0, 10.1, 10.05))
+    )
+
+    run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
+    assert "deit_s@224" not in capsys.readouterr().out
