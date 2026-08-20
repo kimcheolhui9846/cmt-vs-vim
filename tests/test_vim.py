@@ -120,3 +120,12 @@ def _fake_fused_inputs(batch, seqlen, d_inner, d_conv, dt_rank, d_state):
         _node([d_inner, dt_rank]),                  # delta_proj_weight
         _node([d_inner, d_state]),                  # A
     ]
+
+
+def test_pretrained_weights_are_refused_at_a_resolution_other_than_224():
+    """models/cmt.py의 같은 가드와 짝이다 — "224²만" 제약을 집행하는 장치가 두
+    파일에 복제돼 있으므로 테스트도 양쪽에 있어야 한다. Vim-S 공개 가중치는
+    224²에서 학습됐고 다른 해상도는 위치 인코딩 보간이 필요하다. 체크포인트를
+    받기 전에 터지므로 네트워크를 건드리지 않는다."""
+    with pytest.raises(ValueError, match="224"):
+        build_model("vim_s", pretrained=True, img_size=384)
