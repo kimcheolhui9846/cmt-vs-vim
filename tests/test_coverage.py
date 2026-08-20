@@ -223,3 +223,135 @@ def test_mass_fraction_refuses_an_all_zero_attribution():
     void = np.zeros((SIZE, SIZE), dtype=bool)
     with pytest.raises(ValueError, match="질량이 0"):
         mass_fraction(np.zeros((SIZE, SIZE)), obj, void)
+
+
+import pandas as pd
+
+from bench.coverage import (
+    LOW_SAMPLE_MIN,
+    aggregate,
+    area_bin,
+    aspect_class,
+    aspect_ratio,
+    bounding_box,
+    common_subset,
+)
+
+
+def test_area_bins_cover_every_fraction_without_gaps():
+    for fraction in (0.0, 0.019, 0.02, 0.049, 0.05, 0.099, 0.1, 0.199, 0.2,
+                     0.399, 0.4, 0.999, 1.0):
+        assert isinstance(area_bin(fraction), str)
+
+
+def test_area_bin_boundaries_belong_to_the_bin_they_open():
+    """경계값은 아래를 포함하고 위를 제외한다. 0.02는 "2-5%"이지 "<2%"가 아니다."""
+    assert area_bin(0.019) == "<2%"
+    assert area_bin(0.02) == "2-5%"
+    assert area_bin(0.05) == "5-10%"
+    assert area_bin(0.10) == "10-20%"
+    assert area_bin(0.20) == "20-40%"
+    assert area_bin(0.40) == ">=40%"
+
+
+def test_area_bin_rejects_a_fraction_outside_zero_to_one():
+    with pytest.raises(ValueError):
+        area_bin(1.5)
+
+
+def test_bounding_box_is_inclusive():
+    mask = _square_mask(10, 20, 5)
+    assert bounding_box(mask) == (10, 20, 14, 24)
+
+
+def test_aspect_ratio_is_width_over_height():
+    mask = np.zeros((SIZE, SIZE), dtype=bool)
+    mask[10:20, 40:70] = True   # 높이 10, 너비 30
+    assert aspect_ratio(mask) == pytest.approx(3.0)
+
+
+def test_aspect_class_splits_wide_square_and_tall():
+    assert aspect_class(3.0) == "wide"
+    assert aspect_class(1.5) == "wide"
+    assert aspect_class(1.0) == "square"
+    assert aspect_class(1 / 1.5) == "tall"
+    assert aspect_class(0.25) == "tall"
+
+
+def test_aspect_class_is_symmetric_under_inversion():
+    """가로형 기준과 세로형 기준이 서로의 역수여야 한다. 아니면 E2와의 교차
+    검증(Vim은 세로형에서 나빠야 한다)이 기준의 비대칭을 재게 된다."""
+    for ratio in (1.2, 1.6, 2.0, 5.0):
+        assert aspect_class(ratio) != "tall"
+        assert aspect_class(1 / ratio) != "wide"
+        if aspect_class(ratio) == "wide":
+            assert aspect_class(1 / ratio) == "tall"
+
+
+def _measurement_frame() -> pd.DataFrame:
+    rows = []
+    for model in ("deit_s", "vim_s"):
+        for index in range(40):
+            rows.append({
+                "model": model,
+                "condition": "pretrained",
+                "image": f"img_{index:03d}",
+                "instance_id": 1,
+                "area_bin": "<2%" if index < 35 else "20-40%",
+                "aspect_class": "square",
+                "precision_at_k": 0.5 if model == "deit_s" else 0.8,
+                "mass_fraction": 0.3,
+                "random_baseline": 0.01,
+                "status": "ok",
+            })
+    return pd.DataFrame(rows)
+
+
+def test_aggregate_reports_mean_sem_and_count():
+    out = aggregate(_measurement_frame(), ("model", "condition", "area_bin"))
+
+    cell = out.query("model == 'deit_s' and area_bin == '<2%'").iloc[0]
+    assert cell["precision_mean"] == pytest.approx(0.5)
+    assert cell["n"] == 35
+    assert cell["baseline_mean"] == pytest.approx(0.01)
+
+
+def test_aggregate_flags_bins_below_the_low_sample_threshold():
+    """표본 30 미만 구간은 값을 싣되 인용하지 않는다. 표시가 없으면 그
+    구분이 결과 파일에서 사라진다."""
+    out = aggregate(_measurement_frame(), ("model", "condition", "area_bin"))
+
+    small = out.query("model == 'deit_s' and area_bin == '20-40%'").iloc[0]
+    large = out.query("model == 'deit_s' and area_bin == '<2%'").iloc[0]
+    assert small["n"] < LOW_SAMPLE_MIN and bool(small["low_sample"])
+    assert large["n"] >= LOW_SAMPLE_MIN and not bool(large["low_sample"])
+
+
+def test_aggregate_ignores_rows_that_did_not_measure():
+    df = _measurement_frame()
+    df.loc[df.index[:10], "status"] = "no_query_patch"
+    df.loc[df.index[:10], "precision_at_k"] = np.nan
+
+    out = aggregate(df, ("model", "condition", "area_bin"))
+
+    assert out["n"].sum() == 70
+
+
+def test_common_subset_keeps_only_instances_every_cell_measured():
+    """CMT의 격자는 7x7이라 작은 객체에서 질의 후보가 없다. 모델마다 다른
+    부분집합으로 평균을 내면 그 차이가 곧 모델 차이로 읽힌다."""
+    df = pd.DataFrame([
+        {"model": "deit_s", "condition": "pretrained", "image": "a",
+         "instance_id": 1, "status": "ok"},
+        {"model": "cmt_s", "condition": "pretrained", "image": "a",
+         "instance_id": 1, "status": "ok"},
+        {"model": "deit_s", "condition": "pretrained", "image": "b",
+         "instance_id": 1, "status": "ok"},
+        {"model": "cmt_s", "condition": "pretrained", "image": "b",
+         "instance_id": 1, "status": "no_query_patch"},
+    ])
+
+    kept = common_subset(df)
+
+    assert set(kept["image"]) == {"a"}
+    assert len(kept) == 2
