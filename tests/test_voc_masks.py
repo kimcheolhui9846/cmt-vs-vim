@@ -19,6 +19,7 @@ from data.voc_masks import (
     load_mask,
     void_mask,
 )
+from tests.vocfixtures import write_mask_png
 
 RECT = (120, 140, 280, 260)  # (left, top, right, bottom) — 원본 좌표계, 우/하 제외
 """두 테스트 이미지(400x300, 400x600) 어느 쪽에서도 CenterCrop에 살아남는 자리.
@@ -49,15 +50,7 @@ def _synthetic_pair(tmp_path: Path, size: tuple[int, int]) -> tuple[Path, Path]:
     mask = np.zeros((size[1], size[0]), dtype=np.uint8)
     mask[top - 2 : bottom + 2, left - 2 : right + 2] = VOID_LABEL
     mask[top:bottom, left:right] = 1
-    mask_path = tmp_path / "sample_mask.png"
-    palette_image = Image.fromarray(mask, mode="P")
-    # 팔레트를 명시해야 한다. 주지 않으면 Pillow의 PNG 인코더가 실제로 쓰인
-    # 색만 남기고 인덱스를 다시 매기면서 255(void)가 사라진다 — 실측: 저장 전
-    # {0, 1, 255}가 다시 읽으면 {0, 1}이 된다. 실제 VOC 파일은 768바이트
-    # 팔레트를 갖고 있어 멀쩡하므로, 여기서 그 구조를 재현하지 않으면 테스트만
-    # 조용히 다른 입력을 보게 된다.
-    palette_image.putpalette([value // 3 for value in range(768)])
-    palette_image.save(mask_path)
+    mask_path = write_mask_png(tmp_path / "sample_mask.png", mask)
     return image_path, mask_path
 
 
