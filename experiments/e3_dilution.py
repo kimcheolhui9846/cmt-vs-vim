@@ -344,9 +344,20 @@ def run_dilution(
                 )
                 row["condition"] = condition
                 rows.append(row)
-            # 셀마다 다시 쓴다. try/except는 파이썬 예외만 잡는다 — OOM 킬러나
-            # 드라이버 크래시는 못 잡으므로 그 순간까지의 결과가 디스크에 있어야 한다.
-            pd.DataFrame(rows, columns=MEASUREMENT_COLUMNS).to_csv(csv_path, index=False)
+                # 인스턴스마다 다시 쓴다. try/except는 파이썬 예외만 잡는다 —
+                # OOM 킬러나 드라이버 크래시는 못 잡으므로, 그 순간까지의 결과가
+                # 이미 디스크에 있어야 한다.
+                #
+                # 셀 단위로 쓰면 그 주장이 성립하지 않는다. 한 셀이 600개이므로
+                # 599번째에서 죽으면 599행이 통째로 메모리에만 있다가 사라진다.
+                # 재개 로직이 없어 어차피 전체를 다시 돌려야 하지만, 어디까지
+                # 갔고 무엇이 이상했는지 볼 수 있느냐가 달라진다.
+                #
+                # 비용은 쟀다: /mnt/c(9p)에서 3600회 누적 기록이 약 37초로,
+                # 3600회 backward에 몇 분 걸리는 실행에서 감당할 수 있다.
+                pd.DataFrame(rows, columns=MEASUREMENT_COLUMNS).to_csv(
+                    csv_path, index=False
+                )
 
     df = pd.DataFrame(rows, columns=MEASUREMENT_COLUMNS)
 
