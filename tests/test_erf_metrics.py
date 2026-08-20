@@ -2,12 +2,17 @@ import numpy as np
 import pytest
 
 from bench.erf import (
+    ANGLE_TOLERANCE_DEG,
     anisotropy_index,
     central_crop,
     decay_ratio,
     decay_window,
     has_converged,
+    has_converged_deg,
+    mass_radius,
+    peak_location,
     principal_angle_deg,
+    rms_radius,
 )
 
 
@@ -68,6 +73,90 @@ def test_a_single_measurement_has_not_converged():
     assert has_converged([1.3]) is False
 
 
+# --- 각도 전용 절대 허용오차 ------------------------------------------------
+#
+# 상대 기준을 각도에 그대로 쓰면 0에 가까운 각도에서만 기준이 터무니없이
+# 빡빡해진다 — 이것은 값이 작아서 생기는 인공물이지 측정이 불안정하다는
+# 뜻이 아니다. 실측 vim_s/random_init이 정확히 그 사례다.
+
+
+def test_an_angle_that_barely_moves_in_degrees_has_converged():
+    """실측 vim_s/random_init의 주축 각도 (N=128, 256, 512)다. 여섯 개 N 전부
+    0.07°~0.11° 사이에 있고 마지막 변화는 0.008°인데, 상대 기준은 이를
+    10% 변동으로 읽어 '미수렴'으로 버렸다."""
+    assert has_converged_deg([0.0902773896263949, 0.0776279886352549,
+                              0.0697775086330904]) is True
+
+
+def test_the_relative_rule_is_what_discarded_that_angle():
+    """이 테스트가 버그 자체를 고정한다 — 같은 계열을 상대 5% 기준에 넣으면
+    False가 나온다. 절대 경로가 없으면 이 계열은 영원히 인용 불가로 남는다."""
+    assert has_converged([0.0902773896263949, 0.0776279886352549,
+                          0.0697775086330904]) is False
+
+
+def test_an_angle_that_genuinely_wanders_has_not_converged():
+    """실측 deit_s/natural의 마지막 두 점(31.37° -> 34.06°). 절대 기준이
+    '전부 통과시키는 무른 기준'이 되면 안 된다는 것을 이 케이스가 막는다."""
+    assert has_converged_deg([31.371855369015933, 34.05553292955484]) is False
+
+
+def test_a_large_angle_that_is_stable_in_degrees_also_converges():
+    """절대 기준은 값의 크기와 무관해야 한다 — 큰 각도라고 더 관대해지거나
+    더 빡빡해지지 않는다."""
+    assert has_converged_deg([80.4, 80.9]) is True
+
+
+def test_the_angle_tolerance_is_inclusive_at_the_boundary():
+    exactly = [10.0, 10.0 + ANGLE_TOLERANCE_DEG]
+    just_over = [10.0, 10.0 + ANGLE_TOLERANCE_DEG * 1.001]
+    assert has_converged_deg(exactly) is True
+    assert has_converged_deg(just_over) is False
+
+
+def test_a_single_angle_has_not_converged():
+    assert has_converged_deg([0.07]) is False
+
+
+# --- 피크 위치와 질량 반경 ---------------------------------------------------
+
+
+def test_peak_location_finds_the_brightest_pixel():
+    erf = _gaussian_at(center_row=40, center_col=90, sigma_x=20, sigma_y=20)
+    assert peak_location(erf) == (40, 90)
+
+
+def test_mass_radius_matches_the_analytic_half_mass_radius_of_a_gaussian():
+    """중심 대칭 2D 가우시안에서 질량 50%를 담는 반경은 σ·√(2 ln 2) =
+    1.1774σ다. σ=20이면 23.55."""
+    assert mass_radius(_gaussian(20, 20)) == pytest.approx(23.55, abs=0.6)
+
+
+def test_rms_radius_matches_the_analytic_rms_radius_of_a_gaussian():
+    """같은 가우시안의 RMS 반경은 √2·σ = 28.28이다. 두 반경이 서로 다른
+    수라는 것 자체가 설계 문서('질량 50% 반경')와 구현(RMS)이 갈렸던
+    지점이다."""
+    assert rms_radius(_gaussian(20, 20)) == pytest.approx(28.28, abs=0.6)
+
+
+def test_the_rms_radius_is_pulled_by_a_far_field_tail_and_the_half_mass_one_is_not():
+    """왜 설계 문서의 정의를 기록값으로 삼는가에 대한 근거다. RMS는 거리
+    제곱 가중이라 anisotropy_index와 같은 꼬리 지배 문제를 그대로 갖는다 —
+    좁은 코어에 넓고 옅은 받침을 얹으면 RMS는 크게 늘어나지만 질량 50%
+    반경은 코어 안에 머문다.
+
+    받침의 진폭 0.003은 아무 값이나 고른 게 아니다. 가우시안의 질량은 σ²에
+    비례하므로 이 받침이 갖는 질량은 코어의 0.003×(90/10)² = 0.24배, 즉 전체의
+    약 20%다 — 질량의 과반이 여전히 코어에 있어야 "50% 반경이 코어 안에
+    머문다"가 의미 있는 주장이 된다. 받침이 과반을 가지면 50% 반경이 밖으로
+    나가는 게 맞는 동작이지 결함이 아니다."""
+    core = _gaussian(10, 10)
+    with_tail = core + 0.003 * _gaussian(90, 90)
+
+    assert rms_radius(with_tail) > 2 * rms_radius(core)
+    assert mass_radius(with_tail) < 1.5 * mass_radius(core)
+
+
 def test_decay_window_uses_the_full_max_distance_for_a_center_peak():
     """중심 피크(112,112)에서는 상하좌우 여유가 전부 64보다 크므로 그대로 64다.
     기존 decay_ratio 8건이 값 변화 없이 통과해야 하는 이유가 이것이다."""
@@ -86,7 +175,7 @@ def test_decay_window_shrinks_when_the_peak_is_near_an_edge():
 
 
 def test_decay_ratio_raises_when_the_peak_is_too_close_to_the_edge():
-    """반경이 MIN_DECAY_WINDOW(8)보다 좁으면 조용히 좁은 창으로 계산하지 않고
+    """반경이 max_distance에 못 미치면 조용히 좁은 창으로 계산하지 않고
     터진다 — cmt_s/noise 조건에서 실측 중 재현된 실패 모드다(피크가 이미지
     모서리 근처에 찍혀 반경이 0에 가까웠다)."""
     erf = _gaussian_at(center_row=3, center_col=112, sigma_x=20, sigma_y=20)
@@ -94,13 +183,28 @@ def test_decay_ratio_raises_when_the_peak_is_too_close_to_the_edge():
         decay_ratio(erf)
 
 
-def test_decay_ratio_still_works_exactly_at_the_minimum_window():
-    """경계값(반경 정확히 8)에서는 터지지 않아야 한다 — '미만'이지 '이하'가
-    아니다."""
-    erf = _gaussian_at(center_row=8, center_col=112, sigma_x=20, sigma_y=20)
+def test_a_window_that_would_fit_a_slope_is_still_rejected_if_it_is_short():
+    """이것이 하한 8과 '창 전체 요구'를 가르는 테스트다.
+
+    반경 16은 옛 하한(8)을 넉넉히 넘으므로 옛 가드는 통과시켰다. 그러나 그
+    셀의 값은 max_distance=64로 잰 다른 셀들과 같은 열에 들어가는데, 실측
+    맵에서 창을 16으로 좁히면 vim_s/natural의 감쇠비가 1.35에서 2.39로,
+    cmt_s는 1.02에서 0.87로 움직인다 — 순위까지 바뀐다. docstring이 주장하는
+    '같은 열의 숫자는 서로 비교 가능하다'를 실제로 집행하려면 창이 조금이라도
+    좁으면 거절해야 한다."""
+    erf = _gaussian_at(center_row=16, center_col=112, sigma_x=20, sigma_y=20)
+    assert decay_window(erf) == 16  # 옛 하한 8은 넘는다
+    with pytest.raises(ValueError):
+        decay_ratio(erf)
+
+
+def test_decay_ratio_works_when_the_window_is_exactly_max_distance():
+    """경계값(여유가 정확히 max_distance)에서는 터지지 않아야 한다 —
+    '미만'이지 '이하'가 아니다."""
+    erf = _gaussian_at(center_row=64, center_col=112, sigma_x=20, sigma_y=20)
     ratio, window = decay_ratio(erf)
     assert isinstance(ratio, float)
-    assert window == 8
+    assert window == 64
 
 
 def test_decay_ratio_returns_the_window_it_actually_used():
@@ -108,8 +212,16 @@ def test_decay_ratio_returns_the_window_it_actually_used():
     생긴다 — decay_ratio가 자기가 실제로 쓴 반경을 값과 함께 돌려줘야
     호출자가 별도 계산 없이 그대로 CSV에 남길 수 있다."""
     erf = _gaussian_at(center_row=10, center_col=112, sigma_x=20, sigma_y=20)
-    _ratio, window = decay_ratio(erf)
-    assert window == decay_window(erf) == 10
+    _ratio, window = decay_ratio(erf, max_distance=10)
+    assert window == decay_window(erf, max_distance=10) == 10
+
+
+def test_the_rejection_message_names_the_full_window_it_required():
+    """CSV의 error 열에 그대로 남는 문장이다. '최소 8 필요'처럼 없어진 하한을
+    가리키면, 커밋된 데이터가 존재하지 않는 규칙을 근거로 대게 된다."""
+    erf = _gaussian_at(center_row=2, center_col=112, sigma_x=20, sigma_y=20)
+    with pytest.raises(ValueError, match="64"):
+        decay_ratio(erf)
 
 
 def test_central_crop_keeps_the_middle_of_the_array():
