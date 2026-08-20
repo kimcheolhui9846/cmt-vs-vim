@@ -65,6 +65,38 @@ def bin_series(summary: pd.DataFrame, model: str) -> pd.DataFrame:
     return indexed.loc[order].reset_index()
 
 
+BASELINE_TOLERANCE = 1e-9
+"""구간별 기준선이 모델 간에 벌어져도 되는 한계.
+
+같아야 하는 값이므로 실질적으로 0이다. 부동소수 합산 순서 때문에 생기는
+마지막 자리 차이만 허용한다.
+"""
+
+
+def baseline_series(summary: pd.DataFrame) -> pd.DataFrame:
+    """구간별 무작위 기준선. 모델과 무관한 **하나의** 계열이다.
+
+    공통 부분집합에서는 세 모델이 같은 인스턴스를 재므로 구간별 K/N 평균이
+    모델과 무관하게 같아야 한다. 다르다면 모델마다 다른 인스턴스를 잰 것이고,
+    그것이 바로 이 실험이 막으려는 함정이다 — 조용히 평균내지 않고 터뜨린다.
+
+    모델마다 한 번씩 그리던 예전 방식은 같은 선을 세 겹으로 겹쳐 색을 뭉개고,
+    범례 없는 네 번째 계열처럼 보이게 만들었다.
+    """
+    spread = summary.groupby("area_bin")["baseline_mean"].agg(
+        lambda values: values.max() - values.min()
+    )
+    disagreeing = spread[spread > BASELINE_TOLERANCE]
+    if not disagreeing.empty:
+        raise ValueError(
+            f"구간별 기준선이 모델마다 다르다: {disagreeing.to_dict()}. "
+            "세 모델이 같은 인스턴스를 재지 않았다는 뜻이다 — common_subset을 확인할 것."
+        )
+    order = ordered_bins(summary["area_bin"])
+    means = summary.groupby("area_bin")["baseline_mean"].mean().reindex(order)
+    return means.reset_index()
+
+
 def _draw_bins(ax, summary: pd.DataFrame, title: str) -> None:
     for model, colour in MODEL_COLOURS.items():
         if model not in set(summary["model"]):
@@ -81,10 +113,13 @@ def _draw_bins(ax, summary: pd.DataFrame, title: str) -> None:
             ax.scatter(bin_positions(low["area_bin"]), low["precision_mean"],
                        marker="x", color="black", zorder=5,
                        label=f"n < {LOW_SAMPLE_MIN}")
-        # 기준선은 인스턴스마다 K/N이라 구간마다 다르다. 한 줄이 아니라
-        # 구간별 평균으로 그려야 "바닥을 얼마나 넘는가"를 읽을 수 있다.
-        ax.plot(x, series["baseline_mean"], linestyle=":",
-                color=colour, alpha=0.6)
+
+    # 기준선은 인스턴스마다 K/N이라 구간마다 다르지만 **모델 간에는 같다** —
+    # 공통 부분집합이 세 모델에 같은 인스턴스를 주기 때문이다. 그래서 모델
+    # 색이 아니라 중립색으로 한 번만 그리고 범례에 이름을 준다.
+    baseline = baseline_series(summary)
+    ax.plot(bin_positions(baseline["area_bin"]), baseline["baseline_mean"],
+            linestyle=":", color="dimgray", label="random baseline K/N")
 
     # 눈금은 어느 모델이 무엇을 가졌든 여섯 구간 전부를 면적 순서로 고정한다.
     # 문자열 x에 맡기면 축이 만나는 순서대로 쌓여 순서를 잃는다.
@@ -142,12 +177,12 @@ def plot_dilution(csv_path: Path | str, out_path: Path | str) -> Path:
         _draw_bins(
             axes[0][column],
             aggregate(cell, ("model", "condition", "area_bin")),
-            f"{condition} — dotted line = random baseline K/N",
+            f"{condition} - precision@K by object area",
         )
         _draw_aspect(
             axes[1][column],
             aggregate(cell, ("model", "condition", "aspect_class")),
-            f"{condition} — by bounding-box aspect",
+            f"{condition} - by bounding-box aspect",
         )
 
     out_path = Path(out_path)

@@ -75,6 +75,29 @@ def test_bin_series_keeps_the_baseline_alongside_each_point():
     assert list(series["baseline_mean"]) == [0.01, 0.07]
 
 
+def test_the_baseline_is_one_series_not_one_per_model():
+    """공통 부분집합에서 세 모델은 같은 인스턴스를 재므로 기준선이 같다.
+    모델마다 그리면 같은 선이 겹쳐 색이 뭉치고 범례 없는 계열처럼 보인다."""
+    from figures.e3_plot import baseline_series
+
+    baseline = baseline_series(_summary())
+
+    assert list(baseline["area_bin"]) == ["<2%", "5-10%"]
+    assert list(baseline["baseline_mean"]) == [0.01, 0.07]
+
+
+def test_a_baseline_that_differs_between_models_fails_loudly():
+    """구간별 K/N이 모델마다 다르면 세 모델이 다른 인스턴스를 잰 것이다 —
+    이 실험이 막으려는 바로 그 함정이라 평균내 숨기지 않는다."""
+    from figures.e3_plot import baseline_series
+
+    broken = _summary()
+    broken.loc[broken.index[-1], "baseline_mean"] = 0.99
+
+    with pytest.raises(ValueError, match="기준선"):
+        baseline_series(broken)
+
+
 def test_bin_series_fails_on_an_unknown_bin_label():
     """구간 라벨이 바뀌면 조용히 빈 그림이 나온다. 크게 실패시킨다."""
     bad = _summary()
