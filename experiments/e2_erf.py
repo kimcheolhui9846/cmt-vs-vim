@@ -17,7 +17,11 @@ from bench.erf import (
     central_crop,
     decay_ratio,
     has_converged,
+    has_converged_deg,
+    mass_radius,
+    peak_location,
     principal_angle_deg,
+    rms_radius,
 )
 from data.voc import ensure_voc, load_images, sample_image_paths
 from models.registry import MODEL_NAMES, build_model
@@ -25,6 +29,15 @@ from models.registry import MODEL_NAMES, build_model
 CONDITIONS = ("natural", "noise", "random_init")
 SAMPLE_SIZES = (16, 32, 64, 128, 256, 512)
 SEED = 0
+
+CENTRAL_CROP_SIZE = 128
+"""`anisotropy_central`이 쓰는 중심 크롭 한 변의 길이(px).
+
+CSV에 `anisotropy_central_crop` 열로 함께 남긴다. 코드의 기본 인자로만 존재하면
+`results/e2/`만 읽는 사람은 그 열이 무엇을 뜻하는지 알 수 없기 때문이다. 지수는
+크롭 크기에 실제로 민감하다 — 커밋된 N=512 `natural` 맵에서 deit_s는 크롭 32에서
+1.181, 128에서 1.020, 224(전체)에서 1.009다.
+"""
 
 COLUMNS = [
     "model",
@@ -34,11 +47,16 @@ COLUMNS = [
     "anisotropy_converged",
     "anisotropy_central",
     "anisotropy_central_converged",
+    "anisotropy_central_crop",
     "principal_angle_deg",
     "principal_angle_converged",
     "decay_ratio",
     "decay_window",
     "decay_ratio_converged",
+    "peak_row",
+    "peak_col",
+    "mass_radius",
+    "rms_radius",
     "status",
     "error",
 ]
@@ -139,9 +157,23 @@ def run_erf(
 
                 errors: list[str] = []
 
+                # 정직성 기준 2·3이 쓰는 위치·크기 정보. 계획이 "위치(피크 좌표,
+                # 중심으로부터 거리)를 결과에 남긴다"고 요구하는데 지금까지는
+                # 산문으로만 존재했다. argmax와 가중 분위수라 예외가 날 여지가
+                # 없으므로 지표별 try 밖에 둔다.
+                peak_row, peak_col = peak_location(erf)
+                row.update(
+                    peak_row=peak_row,
+                    peak_col=peak_col,
+                    mass_radius=mass_radius(erf),
+                    rms_radius=rms_radius(erf),
+                )
+
                 try:
                     ai = anisotropy_index(erf)
-                    ai_central = anisotropy_index(central_crop(erf))
+                    ai_central = anisotropy_index(
+                        central_crop(erf, size=CENTRAL_CROP_SIZE)
+                    )
                     ani_history.append(ai)
                     central_history.append(ai_central)
                     row.update(
@@ -149,6 +181,7 @@ def run_erf(
                         anisotropy_converged=has_converged(ani_history),
                         anisotropy_central=ai_central,
                         anisotropy_central_converged=has_converged(central_history),
+                        anisotropy_central_crop=CENTRAL_CROP_SIZE,
                     )
                 except Exception as exc:
                     errors.append(f"anisotropy: {type(exc).__name__}: {exc}")
@@ -156,9 +189,13 @@ def run_erf(
                 try:
                     pa = principal_angle_deg(erf)
                     angle_history.append(pa)
+                    # 각도만 절대(도) 기준이다. 상대 기준을 쓰면 0에 가까운
+                    # 각도에서만 기준이 터무니없이 빡빡해져, "수평에 정렬됐다"는
+                    # 가장 강한 결론이 나온 셀이 하필 미수렴으로 폐기된다 —
+                    # vim_s/random_init에서 실제로 그 일이 일어났다.
                     row.update(
                         principal_angle_deg=pa,
-                        principal_angle_converged=has_converged(angle_history),
+                        principal_angle_converged=has_converged_deg(angle_history),
                     )
                 except Exception as exc:
                     errors.append(f"principal_angle: {type(exc).__name__}: {exc}")

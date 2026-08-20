@@ -16,11 +16,16 @@ EXPECTED_COLUMNS = [
     "anisotropy_converged",
     "anisotropy_central",
     "anisotropy_central_converged",
+    "anisotropy_central_crop",
     "principal_angle_deg",
     "principal_angle_converged",
     "decay_ratio",
     "decay_window",
     "decay_ratio_converged",
+    "peak_row",
+    "peak_col",
+    "mass_radius",
+    "rms_radius",
     "status",
     "error",
 ]
@@ -252,6 +257,80 @@ def test_convergence_is_tracked_per_metric(tmp_path, monkeypatch):
     # 매번 같은 값을 주는 두 지표는 상대 변화 0%로 즉시 수렴해야 한다.
     assert bool(last["principal_angle_converged"]) is True
     assert bool(last["decay_ratio_converged"]) is True
+
+
+def test_the_principal_angle_uses_the_absolute_degree_rule(tmp_path, monkeypatch):
+    """주축 각도의 수렴은 상대 기준이 아니라 절대(도) 기준으로 판정해야 한다.
+
+    여기 쓴 세 값은 실측 vim_s/random_init의 N=128·256·512다. 상대 5% 기준으로는
+    마지막 변화가 10%로 읽혀 False가 되고, 실제로 커밋된 CSV에서 이 셀은 여섯 개
+    N 전부 미수렴으로 찍혀 있었다 — 그 탓에 이 브랜치에서 가장 직접적인 결과
+    (비등방 지수 1.98짜리 ERF 타원이 수평에서 0.07° 안에 정렬)가 인용 불가로
+    폐기됐다. 다른 세 지표가 상대 기준을 그대로 쓰는지도 같은 실행에서 확인한다."""
+    _offline(monkeypatch)
+
+    angles = iter([0.0902773896263949, 0.0776279886352549, 0.0697775086330904] * 3)
+    monkeypatch.setattr(e2, "principal_angle_deg", lambda erf: next(angles))
+    # 비등방 지수는 매번 5배씩 벌어지게 둔다 — 각도만 절대 기준으로 바뀌었지
+    # 나머지가 덩달아 무른 기준을 쓰게 된 것은 아님을 같은 행에서 보인다.
+    diverging = iter([1.0, 1.0, 5.0, 5.0, 25.0, 25.0] * 3)
+    monkeypatch.setattr(e2, "anisotropy_index", lambda erf: next(diverging))
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8, 16), out_dir=tmp_path)
+
+    last = df[df["condition"] == "natural"].sort_values("n_images").iloc[-1]
+    assert bool(last["principal_angle_converged"]) is True
+    assert bool(last["anisotropy_converged"]) is False
+
+
+def test_a_wandering_angle_is_still_reported_as_unconverged(tmp_path, monkeypatch):
+    """절대 기준이 '무엇이든 통과시키는' 기준이 되면 안 된다. 실측
+    deit_s/natural의 각도 계열(수십 도씩 흔들린다)은 여전히 미수렴이어야 한다."""
+    _offline(monkeypatch)
+
+    angles = iter([46.58521079560813, 31.371855369015933, 34.05553292955484] * 3)
+    monkeypatch.setattr(e2, "principal_angle_deg", lambda erf: next(angles))
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4, 8, 16), out_dir=tmp_path)
+
+    last = df[df["condition"] == "natural"].sort_values("n_images").iloc[-1]
+    assert bool(last["principal_angle_converged"]) is False
+
+
+def test_the_central_crop_size_is_recorded(tmp_path, monkeypatch):
+    """`anisotropy_central`이 어느 크기로 자른 값인지 코드의 기본 인자에만
+    있으면, results/e2/만 읽는 사람은 그 열이 무엇을 뜻하는지 알 수 없다.
+    크롭 크기에 따라 값이 실제로 달라지므로(실측 N=512 natural에서 deit_s는
+    크롭 32에서 1.181, 224에서 1.009) 크기 없는 지수는 해석이 불가능하다."""
+    _offline(monkeypatch)
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    assert (df["anisotropy_central_crop"] == e2.CENTRAL_CROP_SIZE).all()
+
+
+def test_the_peak_location_and_radii_come_from_the_measured_map(tmp_path, monkeypatch):
+    """정직성 기준 2·3이 쓰는 숫자(피크 좌표, 중심으로부터 거리, 질량 반경)를
+    결과에 남긴다 — 계획이 명시적으로 요구하는데 지금까지는 산문으로만 존재했다.
+
+    상수를 적어 넣는 회귀를 막으려면 맵마다 다른 값이 나와야 하므로, 피크를
+    중심에서 옮긴 맵을 넣고 그 좌표가 그대로 기록되는지 본다."""
+    def off_center(model_name, model, images, device="cuda"):
+        rows, cols = np.indices((224, 224))
+        return np.exp(-((rows - 40) ** 2 + (cols - 90) ** 2) / (2 * 20**2))
+
+    _offline(monkeypatch)
+    monkeypatch.setattr(e2, "accumulate_erf", off_center)
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    assert (df["peak_row"] == 40).all()
+    assert (df["peak_col"] == 90).all()
+    # 질량 50% 반경(설계 문서의 정의)과 RMS 반경(Task 9 게이트가 쓴 정의)을
+    # 둘 다 남긴다. 이 맵은 중심에서 벗어나 있으므로 두 반경 모두 σ=20보다
+    # 훨씬 크고, 거리 제곱 가중인 RMS가 더 크다.
+    assert (df["mass_radius"] > 0).all()
+    assert (df["rms_radius"] > df["mass_radius"]).all()
 
 
 def test_anisotropy_central_is_recorded(tmp_path, monkeypatch):
