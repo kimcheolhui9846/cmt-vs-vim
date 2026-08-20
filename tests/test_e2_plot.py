@@ -1,12 +1,17 @@
+import matplotlib.axes
+import matplotlib.figure
 import numpy as np
 import pandas as pd
 import pytest
 
 from figures.e2_plot import (
+    HEATMAP_VMIN,
     check_map_key_format,
     erf_panel_key,
     final_metrics,
     format_metric,
+    heatmap_norm,
+    panel_title,
     parse_map_keys,
     plot_erf,
 )
@@ -94,6 +99,92 @@ def test_format_metric_marks_a_missing_value_as_not_available():
     안 된다 — "n/a"가 이 지표만 없다는 뜻을 분명히 한다."""
     assert format_metric(float("nan")) == "n/a"
     assert format_metric(None) == "n/a"
+
+
+# --- 히트맵 정규화와 패널 제목 ------------------------------------------------
+#
+# 이 그림은 블로그 글의 대표 이미지로 지정돼 있다. 패널마다 따로 오토스케일하는
+# 선형 norm은 두 가지를 동시에 망가뜨렸다: 질량 반경이 5% 안쪽인 cmt_s/natural과
+# deit_s/natural이 전혀 다른 크기로 보였고, 지수 1.98·각도 0.07°를 지고 있는
+# vim_s/random_init은 특징 없는 밝은 점 하나로 뭉갰다.
+
+
+def test_the_normalisation_reveals_the_dynamic_range():
+    """선형이면 안 된다. 커밋된 맵은 값이 여러 자릿수에 걸쳐 있고
+    (vim_s/random_init은 1.0에서 8.8e-29까지) 선형 눈금에서는 피크 근처를 뺀
+    전부가 같은 색으로 뭉개진다. 로그 눈금에서 1e-3은 표시 범위의 25%
+    지점이어야 한다 — 선형이었다면 0.1%다."""
+    norm = heatmap_norm()
+
+    assert norm(1e-3) == pytest.approx(0.25, abs=0.02)
+    assert norm(1.0) == pytest.approx(1.0)
+
+
+def test_the_normalisation_clips_instead_of_dropping_the_far_tail():
+    """vmin 아래 값(vim_s/random_init의 1e-28대 꼬리)은 색을 잃지 않고 바닥
+    색으로 눌려야 한다. clip이 없으면 '범위 밖' 처리로 빠져 패널에 구멍이
+    난다."""
+    norm = heatmap_norm()
+
+    assert norm(HEATMAP_VMIN / 1000) == pytest.approx(0.0)
+
+
+def test_every_heatmap_gets_the_same_normalisation(tmp_path, monkeypatch):
+    """패널마다 오토스케일하면 축이 없는 그림이 된다 — 각 패널의 색이 그
+    패널의 최댓값에만 상대적이라 패널끼리 비교할 수 없는데, 이 그림의 요점은
+    바로 모델 간 비교다. 실제로 커밋된 PNG에서 cmt_s/natural이 deit_s/natural
+    보다 훨씬 넓은 수용영역처럼 보였는데 질량 반경은 84.4 대 80.5, 5% 안쪽이다.
+
+    imshow에 넘어간 norm을 직접 붙잡아 확인한다 — 회귀(norm 인자 제거)를 넣으면
+    None이 잡혀 실패한다."""
+    seen = []
+    original = matplotlib.axes.Axes.imshow
+
+    def spy(self, data, **kwargs):
+        seen.append(kwargs.get("norm"))
+        return original(self, data, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "imshow", spy)
+    csv, npz = _write_sample(tmp_path)
+
+    plot_erf(csv, npz, tmp_path / "e2.png")
+
+    assert len(seen) == 9
+    assert all(norm is not None for norm in seen), "패널이 자기 스케일로 그려졌다"
+    assert len({id(norm) for norm in seen}) == 1, "패널마다 다른 norm을 썼다"
+
+
+def test_the_figure_carries_a_colorbar(tmp_path, monkeypatch):
+    """공유 눈금은 눈금자가 보여야 뜻이 있다. 컬러바가 없으면 독자가 두 패널의
+    같은 색이 같은 값인지 확인할 방법이 없다."""
+    calls = []
+    original = matplotlib.figure.Figure.colorbar
+
+    def spy(self, *args, **kwargs):
+        calls.append(kwargs)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "colorbar", spy)
+    csv, npz = _write_sample(tmp_path)
+
+    plot_erf(csv, npz, tmp_path / "e2.png")
+
+    assert calls, "컬러바가 없다"
+
+
+def test_the_panel_title_names_the_sample_size():
+    """어느 패널이 몇 장을 평균한 것인지가 제목에 없으면, 지표는 가장 큰 N의
+    값인데 히트맵은 다른 N일 수도 있다는 의심을 독자가 배제할 수 없다."""
+    title = panel_title("vim_s", "random_init", 512, anisotropy=1.98, decay_ratio=1.90)
+
+    assert "N=512" in title
+    assert "vim_s" in title and "random_init" in title
+
+
+def test_the_panel_title_marks_a_missing_metric():
+    title = panel_title("cmt_s", "noise", 512, anisotropy=1.12, decay_ratio=float("nan"))
+
+    assert "n/a" in title
 
 
 # --- npz 키 파싱 — model__condition__nN (Task 7 개정판) ------------------------

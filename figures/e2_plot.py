@@ -12,8 +12,55 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import LogNorm
 
 CONDITIONS = ("natural", "noise", "random_init")
+
+HEATMAP_VMIN = 1e-4
+"""히트맵 로그 눈금의 아래 끝.
+
+`accumulate_erf`가 이미지마다 peak로 나눈 뒤 평균하므로 모든 맵의 최댓값은 1
+이하이고, 1.0은 "peak gradient를 받는 픽셀"이라는 같은 뜻을 아홉 패널에서
+공유한다. 따라서 위 끝은 1.0으로 고정된다.
+
+아래 끝 1e-4는 peak의 1/10000, 즉 네 자릿수 아래다. 커밋된 맵의 실제 범위는
+그보다 훨씬 넓지만(`vim_s/random_init`은 8.8e-29까지 내려간다) 그 구간은
+수용영역이 아니라 수치 바닥이라, 눈금을 거기까지 늘리면 정작 봐야 할 네 자릿수가
+색 두어 칸으로 압축된다.
+"""
+
+
+def heatmap_norm() -> LogNorm:
+    """아홉 패널이 공유하는 색 눈금.
+
+    패널마다 오토스케일하면(이전 동작) 각 패널의 색이 그 패널의 최댓값에만
+    상대적이라 패널 간 비교가 불가능해진다 — 그런데 이 그림의 요점이 바로 모델
+    간 비교다. 실제로 커밋된 PNG에서 `cmt_s/natural`이 `deit_s/natural`보다
+    훨씬 넓은 수용영역처럼 보였는데, 두 맵의 질량 반경은 84.4 대 80.5로 5%
+    안쪽이었다.
+
+    선형이 아니라 로그인 이유는 반대쪽 실패다: `vim_s/random_init`은 값이 1.0에서
+    1e-28까지 걸쳐 있어 선형 눈금에서는 특징 없는 밝은 점 하나가 된다 — 하필
+    비등방 지수 1.98과 수평에서 0.07° 떨어진 주축을 지고 있는, 이 브랜치에서
+    가장 할 말이 많은 패널이다.
+
+    `clip=True`라 vmin 아래 값은 범위 밖으로 빠지지 않고 바닥 색으로 눌린다.
+    """
+    return LogNorm(vmin=HEATMAP_VMIN, vmax=1.0, clip=True)
+
+
+def panel_title(model: str, condition: str, n: int, anisotropy, decay_ratio) -> str:
+    """히트맵 패널 제목. 평균에 쓴 이미지 수(N)를 반드시 포함한다.
+
+    지표는 `final_metrics`가 고른 가장 큰 N의 값이고 히트맵은 `erf_panel_key`가
+    고른 가장 큰 N의 맵이라 둘은 구조적으로 같은 N이지만, 그 사실이 그림에
+    적혀 있지 않으면 독자가 확인할 방법이 없다.
+    """
+    return (
+        f"{model} / {condition}  (N={n})\n"
+        f"anisotropy {format_metric(anisotropy)}, "
+        f"decay {format_metric(decay_ratio)}"
+    )
 
 # erf_maps.npz 키 형식: "{model}__{condition}__n{n}" (Task 7 개정판, 예:
 # "deit_s__natural__n16"). 안쪽 N 루프가 조건당 맵 하나를 덮어써서 가장 큰
@@ -114,22 +161,31 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
 
     metrics = final_metrics(df)
     models = list(dict.fromkeys(metrics["model"]))
-    fig, axes = plt.subplots(len(models), 4, figsize=(18, 4 * len(models)),
-                             squeeze=False)
+    # constrained_layout이어야 컬러바가 히트맵 세 열에서 제 몫의 자리를 받는다.
+    # tight_layout으로는 컬러바가 나중에 얹혀 수렴 곡선 패널 위를 덮는다.
+    fig, axes = plt.subplots(len(models), 4, figsize=(19, 4 * len(models)),
+                             squeeze=False, constrained_layout=True)
+
+    # 아홉 패널이 하나의 눈금을 공유한다. 인스턴스를 한 번만 만들어 전부에
+    # 넘기는 것이 요점이다 — 패널마다 새로 만들면 값은 같아도 나중에 누가
+    # 한쪽만 바꿀 수 있고, 애초에 오토스케일로 되돌아가기도 쉽다.
+    norm = heatmap_norm()
+    image = None
 
     for row, model in enumerate(models):
         for column, condition in enumerate(CONDITIONS):
             ax = axes[row][column]
             key = erf_panel_key(parsed, model, condition)
             if key is not None:
-                ax.imshow(maps[key], cmap="viridis")
+                image = ax.imshow(maps[key], cmap="viridis", norm=norm)
                 cell = metrics.query("model == @model and condition == @condition")
                 if not cell.empty:
-                    ax.set_title(
-                        f"{model} / {condition}\n"
-                        f"anisotropy {format_metric(cell.iloc[0]['anisotropy'])}, "
-                        f"decay {format_metric(cell.iloc[0]['decay_ratio'])}"
-                    )
+                    panel_n = next(p["n"] for p in parsed if p["key"] == key)
+                    ax.set_title(panel_title(
+                        model, condition, panel_n,
+                        anisotropy=cell.iloc[0]["anisotropy"],
+                        decay_ratio=cell.iloc[0]["decay_ratio"],
+                    ))
             else:
                 ax.text(0.5, 0.5, "not measured", transform=ax.transAxes,
                         ha="center", va="center")
@@ -159,7 +215,19 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
             ax2.set_ylabel("decay ratio", color="tab:orange")
             ax2.tick_params(axis="y", labelcolor="tab:orange")
 
-    fig.tight_layout()
+    if image is not None:
+        # 공유 눈금은 눈금자가 보여야 뜻이 있다. 컬러바가 없으면 두 패널의 같은
+        # 색이 같은 값인지 독자가 확인할 방법이 없다. 히트맵 세 열에만 붙인다 —
+        # 네 번째 열은 수렴 곡선이라 이 눈금과 무관하다.
+        fig.colorbar(
+            image,
+            ax=[axes[row][column]
+                for row in range(len(models)) for column in range(3)],
+            location="bottom",
+            fraction=0.03,
+            pad=0.02,
+            label="ERF magnitude (per-image peak-normalised, log scale)",
+        )
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return Path(out_path)
