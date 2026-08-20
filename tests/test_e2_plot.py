@@ -104,9 +104,9 @@ def test_format_metric_marks_a_missing_value_as_not_available():
 # --- 히트맵 정규화와 패널 제목 ------------------------------------------------
 #
 # 이 그림은 블로그 글의 대표 이미지로 지정돼 있다. 패널마다 따로 오토스케일하는
-# 선형 norm은 두 가지를 동시에 망가뜨렸다: 질량 반경이 5% 안쪽인 cmt_s/natural과
-# deit_s/natural이 전혀 다른 크기로 보였고, 지수 1.98·각도 0.07°를 지고 있는
-# vim_s/random_init은 특징 없는 밝은 점 하나로 뭉갰다.
+# 선형 norm은 두 가지를 동시에 망가뜨렸다: RMS 반경이 4.8%밖에 차이 나지 않는
+# cmt_s/natural과 deit_s/natural이 전혀 다른 크기로 보였고, 지수 1.98에 주축이
+# 수평 1° 안쪽인 vim_s/random_init은 특징 없는 밝은 점 하나로 뭉갰다.
 
 
 def test_the_normalisation_reveals_the_dynamic_range():
@@ -133,7 +133,8 @@ def test_every_heatmap_gets_the_same_normalisation(tmp_path, monkeypatch):
     """패널마다 오토스케일하면 축이 없는 그림이 된다 — 각 패널의 색이 그
     패널의 최댓값에만 상대적이라 패널끼리 비교할 수 없는데, 이 그림의 요점은
     바로 모델 간 비교다. 실제로 커밋된 PNG에서 cmt_s/natural이 deit_s/natural
-    보다 훨씬 넓은 수용영역처럼 보였는데 질량 반경은 84.4 대 80.5, 5% 안쪽이다.
+    보다 훨씬 넓은 수용영역처럼 보였는데 RMS 반경은 84.4 대 80.5로 4.8% 차이다
+    (질량 50% 반경으로는 78.6 대 72.3, 8.7%).
 
     imshow에 넘어간 norm을 직접 붙잡아 확인한다 — 회귀(norm 인자 제거)를 넣으면
     None이 잡혀 실패한다."""
