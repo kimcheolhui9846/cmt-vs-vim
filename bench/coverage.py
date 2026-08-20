@@ -216,20 +216,42 @@ def aggregate(df: pd.DataFrame, group_columns: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
-def common_subset(df: pd.DataFrame) -> pd.DataFrame:
-    """모든 (모델, 조건) 셀이 측정에 성공한 인스턴스만 남긴다.
+def expected_cells(
+    model_names: tuple[str, ...], conditions: tuple[str, ...]
+) -> set[tuple[str, str]]:
+    """이 실행이 재기로 한 (모델, 조건) 전부."""
+    return {(model, condition) for model in model_names for condition in conditions}
+
+
+def common_subset(df: pd.DataFrame, cells: set[tuple[str, str]]) -> pd.DataFrame:
+    """`cells`의 모든 (모델, 조건)이 측정에 성공한 인스턴스만 남긴다.
 
     CMT의 격자는 7×7이라 셀 하나가 32×32다. 작은 객체는 어떤 셀도 과반으로
     덮지 못해 질의 후보가 없고, 그러면 CMT의 표본만 큰 객체 쪽으로 쏠린다 —
     하필 이 실험이 재려는 축이 객체 크기다. 부분집합이 다른 채로 평균을 내면
     그 쏠림이 곧 모델 차이로 읽힌다.
 
+    **기대 셀을 인자로 받고 df에서 유추하지 않는 것이 이 함수의 핵심이다.**
+    유추하면 같은 함정이 한 층 위에서 재현된다 — 한 모델이 통째로 빠진 실행
+    (OOM 킬러나 드라이버 크래시는 try/except가 잡지 못한다)에서는 기준 개수가
+    조용히 줄어들어, 두 모델만 비교한 결과가 완전한 것처럼 보인다. status로
+    표시된 실패와 달리 '행이 아예 없는' 실패는 df 안에 흔적을 남기지 않으므로
+    경고조차 뜨지 않는다.
+
     제외된 인스턴스는 사라지지 않는다. `coverage.csv`에 status와 함께 남아
-    있고, README가 모델별 제외 수를 적는다.
+    있고, README가 격자별 제외 수를 적는다.
     """
+    present = set(map(tuple, df[["model", "condition"]].drop_duplicates().to_numpy()))
+    missing = cells - present
+    if missing:
+        raise ValueError(
+            f"측정 행이 하나도 없는 셀이 있다: {sorted(missing)}. "
+            "실행이 도중에 죽었는지 확인할 것 — 남은 셀만으로 평균을 내면 "
+            "빠진 모델이 있었다는 사실 자체가 결과에서 사라진다."
+        )
+
     measured = df[df["status"] == "ok"]
     if measured.empty:
         return measured.reset_index(drop=True)
-    required = len(df[["model", "condition"]].drop_duplicates())
     sizes = measured.groupby(["image", "instance_id"])["model"].transform("size")
-    return measured[sizes == required].reset_index(drop=True)
+    return measured[sizes == len(cells)].reset_index(drop=True)

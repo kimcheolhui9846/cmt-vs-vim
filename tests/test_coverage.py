@@ -235,6 +235,7 @@ from bench.coverage import (
     aspect_ratio,
     bounding_box,
     common_subset,
+    expected_cells,
 )
 
 
@@ -307,6 +308,19 @@ def _measurement_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _two_model_frame() -> pd.DataFrame:
+    return pd.DataFrame([
+        {"model": "deit_s", "condition": "pretrained", "image": "a",
+         "instance_id": 1, "status": "ok"},
+        {"model": "cmt_s", "condition": "pretrained", "image": "a",
+         "instance_id": 1, "status": "ok"},
+        {"model": "deit_s", "condition": "pretrained", "image": "b",
+         "instance_id": 1, "status": "ok"},
+        {"model": "cmt_s", "condition": "pretrained", "image": "b",
+         "instance_id": 1, "status": "no_query_patch"},
+    ])
+
+
 def test_aggregate_reports_mean_sem_and_count():
     out = aggregate(_measurement_frame(), ("model", "condition", "area_bin"))
 
@@ -340,18 +354,31 @@ def test_aggregate_ignores_rows_that_did_not_measure():
 def test_common_subset_keeps_only_instances_every_cell_measured():
     """CMT의 격자는 7x7이라 작은 객체에서 질의 후보가 없다. 모델마다 다른
     부분집합으로 평균을 내면 그 차이가 곧 모델 차이로 읽힌다."""
-    df = pd.DataFrame([
-        {"model": "deit_s", "condition": "pretrained", "image": "a",
-         "instance_id": 1, "status": "ok"},
-        {"model": "cmt_s", "condition": "pretrained", "image": "a",
-         "instance_id": 1, "status": "ok"},
-        {"model": "deit_s", "condition": "pretrained", "image": "b",
-         "instance_id": 1, "status": "ok"},
-        {"model": "cmt_s", "condition": "pretrained", "image": "b",
-         "instance_id": 1, "status": "no_query_patch"},
-    ])
+    cells = expected_cells(("deit_s", "cmt_s"), ("pretrained",))
 
-    kept = common_subset(df)
+    kept = common_subset(_two_model_frame(), cells)
 
     assert set(kept["image"]) == {"a"}
     assert len(kept) == 2
+
+
+def test_common_subset_fails_when_a_model_produced_no_rows_at_all():
+    """모델 하나가 통째로 빠진 실행에서 조용히 두 모델만 비교하지 않도록 막는다.
+
+    status로 표시된 실패와 달리 '행이 아예 없는' 실패는 df 안에 흔적이 없다.
+    기대 셀을 df에서 유추하면 기준 개수가 함께 줄어, 빠진 모델이 있었다는
+    사실 자체가 결과에서 사라진다.
+    """
+    cells = expected_cells(("deit_s", "cmt_s", "vim_s"), ("pretrained",))
+
+    with pytest.raises(ValueError, match="vim_s"):
+        common_subset(_two_model_frame(), cells)
+
+
+def test_aggregate_keeps_a_single_sample_sem_as_nan():
+    """표본이 1이면 표준오차는 정의되지 않는다(ddof=1). 0으로 채우면 오차 막대가
+    없는 점이 그림에서 가장 정밀한 값처럼 보인다."""
+    out = aggregate(_measurement_frame().head(1), ("model", "condition", "area_bin"))
+
+    assert out.iloc[0]["n"] == 1
+    assert pd.isna(out.iloc[0]["precision_sem"])
