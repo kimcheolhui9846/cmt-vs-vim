@@ -4,6 +4,7 @@ cls 토큰을 집으면 ERF가 이미지 전체에 퍼져 비등방 지수가 1.
 'Vim은 등방'이라는, 논문을 반증하는 방향의 그럴듯한 오답이다. 아무것도 깨지지
 않으므로 결과만 봐서는 알 수 없다.
 """
+import pytest
 import torch
 
 from models.probes import center_token_scalar
@@ -75,3 +76,82 @@ def test_vim_center_index_skips_the_inserted_cls_token():
     from models.probes import vim_center_sequence_index
 
     assert vim_center_sequence_index(num_patches=196) == 106
+
+
+def test_query_token_scalar_reduces_to_the_centre_token():
+    """일반화가 기존 동작을 바꾸지 않았는지 확인한다. 값이 정확히 같아야 한다."""
+    from models.probes import PATCH_GRID_AT_224, query_token_scalar
+
+    for name in MODEL_NAMES:
+        torch.manual_seed(0)
+        model = build_model(name, pretrained=False, img_size=224).eval().cuda()
+        x = torch.randn(1, 3, 224, 224, device="cuda")
+        grid = PATCH_GRID_AT_224[name]
+
+        centre = center_token_scalar(name, model, x)
+        queried = query_token_scalar(name, model, x, grid // 2, grid // 2)
+
+        assert torch.equal(centre, queried), name
+
+
+def test_the_declared_patch_grid_matches_what_the_model_produces():
+    """experiments/e3_dilution.py가 이 값을 질의 후보 선택에 넘긴다. 어긋나면
+    마스크 안이라고 고른 좌표가 전혀 다른 토큰을 가리킨다."""
+    from models.probes import PATCH_GRID_AT_224, feature_grid
+
+    for name in MODEL_NAMES:
+        torch.manual_seed(0)
+        model = build_model(name, pretrained=False, img_size=224).eval().cuda()
+        x = torch.randn(1, 3, 224, 224, device="cuda")
+
+        assert feature_grid(name, model, x) == PATCH_GRID_AT_224[name], name
+
+
+def test_a_query_token_off_the_grid_fails_loudly():
+    from models.probes import query_token_scalar
+
+    torch.manual_seed(0)
+    model = build_model("deit_s", pretrained=False, img_size=224).eval().cuda()
+    x = torch.randn(1, 3, 224, 224, device="cuda")
+
+    with pytest.raises(IndexError):
+        query_token_scalar("deit_s", model, x, 14, 0)
+
+
+def test_vim_sequence_index_shifts_only_after_the_inserted_cls():
+    """cls는 M//2=98에 끼워 넣어지므로 98번째 패치부터 밀린다. 경계를 못박는다."""
+    from models.probes import vim_sequence_index
+
+    assert vim_sequence_index(39, num_patches=196) == 39    # 삽입 위치 앞 — 그대로
+    assert vim_sequence_index(97, num_patches=196) == 97
+    assert vim_sequence_index(98, num_patches=196) == 99    # 삽입 위치부터 한 칸
+    assert vim_sequence_index(156, num_patches=196) == 157
+
+
+def test_query_tokens_look_at_their_own_patch():
+    """격자 좌표를 집으면 peak가 그 패치의 픽셀 안에 있어야 한다.
+
+    좌표를 **둘** 쓴다. Vim은 cls를 M//2=98에 끼워 넣으므로 시퀀스 인덱스가 그
+    위치를 기준으로 갈리는데, 격자 14에서 (2, 11)은 patch_index 39라 시프트가
+    없고 (11, 2)는 156이라 한 칸 밀린다. 중심 (7, 7)은 105라 밀리는 쪽이므로,
+    중심 하나만 테스트하면 시프트 없는 분기가 한 번도 실행되지 않는다.
+
+    세 모델 모두 고정 환경에서 두 좌표 다 적중함을 미리 확인했다.
+    """
+    from models.probes import PATCH_GRID_AT_224, query_token_scalar
+
+    for name in MODEL_NAMES:
+        torch.manual_seed(0)
+        model = build_model(name, pretrained=False, img_size=224).eval().cuda()
+        grid = PATCH_GRID_AT_224[name]
+        cell = 224 // grid
+
+        for target in ((2, grid - 3), (grid - 3, 2)):
+            x = torch.randn(1, 3, 224, 224, device="cuda").requires_grad_(True)
+            query_token_scalar(name, model, x, *target).sum().backward()
+            grad = x.grad.abs().sum(dim=1)[0]
+            row, col = divmod(int(grad.argmax()), grad.shape[1])
+
+            assert (row // cell, col // cell) == target, (
+                f"{name}: peak ({row}, {col})가 패치 {target} 밖이다"
+            )

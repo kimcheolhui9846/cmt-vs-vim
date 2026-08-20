@@ -45,20 +45,41 @@ FEATURE_MODULE = {
 }
 
 
+PATCH_GRID_AT_224 = {"deit_s": 14, "vim_s": 14, "cmt_s": 7}
+"""224² 입력에서 각 모델이 내놓는 최종 격자 한 변. 이 저장소의 유일한 출처다.
+
+DeiT와 Vim은 patch16이라 14×14, CMT는 4단계 다운샘플 끝이라 7×7이다. 격자가
+다르면 같은 객체라도 질의 후보의 개수가 달라진다 — CMT의 셀은 32×32라 작은
+객체가 어떤 셀도 과반으로 덮지 못한다. 그 비대칭은 Task 7이 모델별 제외 수로
+기록하고, 집계는 `common_subset`이 공통 부분집합만 남긴다.
+
+`bench/coverage.py`는 이 값을 복제하지 않는다 — `query_patch(mask, grid)`가
+격자를 인자로 받으므로, 상수를 아는 것은 호출자인 `experiments/e3_dilution.py`
+하나뿐이다. 값이 맞는지는
+`tests/test_probes.py::test_the_declared_patch_grid_matches_what_the_model_produces`가
+실제 모델을 돌려 단언한다 — 추측이 아니라 실측이다.
+"""
+
+
+def vim_sequence_index(patch_index: int, num_patches: int) -> int:
+    """격자 순서 patch_index가 Vim 시퀀스에서 놓이는 자리.
+
+    Vim은 cls 토큰을 M//2에 '끼워 넣는다'(vim_official.py:427). 삽입 위치
+    이후의 패치는 전부 한 칸 밀린다.
+    """
+    cls_position = num_patches // 2
+    return patch_index + 1 if patch_index >= cls_position else patch_index
+
+
 def vim_center_sequence_index(num_patches: int) -> int:
     """Vim의 시퀀스에서 중심 패치가 있는 위치.
-
-    Vim은 cls 토큰을 M//2에 '끼워 넣는다'(vim_official.py:427). 중심 패치는
-    격자 (g//2, g//2)이고, 그 인덱스가 삽입 위치보다 뒤이므로 1칸 밀린다.
 
     M=196이면 cls가 98번이고 중심 패치는 105번 → 106번이다. 시퀀스 길이 197의
     '가운데'인 98을 집으면 정확히 cls 토큰이다 — 실제로 forward_features가
     돌려주는 값이 hidden_states[:, 98]임을 확인했다.
     """
     grid = int(num_patches ** 0.5)
-    patch_index = (grid // 2) * grid + (grid // 2)
-    cls_position = num_patches // 2
-    return patch_index + 1 if patch_index >= cls_position else patch_index
+    return vim_sequence_index((grid // 2) * grid + (grid // 2), num_patches)
 
 
 @contextmanager
@@ -107,25 +128,56 @@ def _capture(model: nn.Module, module_name: str, x: torch.Tensor) -> torch.Tenso
     return captured["out"]
 
 
+def _grid_of(features: torch.Tensor) -> int:
+    if features.dim() == 4:  # (B, C, H, W) — CMT
+        return int(features.shape[-1])
+    return int((features.shape[1] - 1) ** 0.5)  # cls 토큰 하나를 뺀다
+
+
+def feature_grid(model_name: str, model: nn.Module, x: torch.Tensor) -> int:
+    """이 모델이 이 입력에서 실제로 내놓는 격자 한 변. 상수 검증용이다."""
+    return _grid_of(_capture(model, FEATURE_MODULE[model_name], x))
+
+
+def _token_scalar(model_name: str, features: torch.Tensor, row: int, col: int):
+    grid = _grid_of(features)
+    if not (0 <= row < grid and 0 <= col < grid):
+        raise IndexError(f"{model_name}의 격자는 {grid}x{grid}인데 ({row}, {col})을 요청했다")
+
+    if features.dim() == 4:  # (B, C, H, W) — CMT
+        return features[:, :, row, col].sum(dim=1)
+
+    patch_index = row * grid + col
+    if model_name == "vim_s":
+        index = vim_sequence_index(patch_index, num_patches=grid * grid)
+    elif model_name == "deit_s":
+        index = 1 + patch_index  # cls가 맨 앞
+    else:
+        raise ValueError(
+            f"'{model_name}'의 토큰 배치를 모른다. cls 토큰이 어디 있는지 확인하지 "
+            "않고 시퀀스를 인덱싱하면 정확히 이 파일이 막으려는 오답이 나온다."
+        )
+    return features[:, index, :].sum(dim=1)
+
+
+def query_token_scalar(
+    model_name: str, model: nn.Module, x: torch.Tensor, row: int, col: int
+) -> torch.Tensor:
+    """최종 특징맵의 격자 좌표 (row, col) 토큰의 채널 합. 배치별 스칼라 (B,).
+
+    E3는 객체마다 다른 좌표를 집는다 — 마스크 안에 있으면서 무게중심에 가장
+    가까운 패치다. 좌표는 **그 모델 자신의 격자** 기준이다(DeiT·Vim 14×14,
+    CMT 7×7). 격자가 달라도 결과인 기여도 지도와 K는 둘 다 픽셀 공간이라
+    지표는 모델 간 비교가 가능하다.
+    """
+    features = _capture(model, FEATURE_MODULE[model_name], x)
+    return _token_scalar(model_name, features, row, col)
+
+
 def center_token_scalar(
     model_name: str, model: nn.Module, x: torch.Tensor
 ) -> torch.Tensor:
     """최종 특징맵 중심 토큰의 채널 합. 배치별 스칼라 (B,)."""
     features = _capture(model, FEATURE_MODULE[model_name], x)
-
-    if features.dim() == 4:  # (B, C, H, W) — CMT
-        _, _, height, width = features.shape
-        return features[:, :, height // 2, width // 2].sum(dim=1)
-
-    _, tokens, _ = features.shape
-    if model_name == "vim_s":
-        index = vim_center_sequence_index(num_patches=tokens - 1)
-    elif model_name == "deit_s":
-        grid = int((tokens - 1) ** 0.5)
-        index = 1 + (grid // 2) * grid + (grid // 2)  # cls가 맨 앞
-    else:
-        raise ValueError(
-            f"'{model_name}'의 토큰 배치를 모른다. cls 토큰이 어디 있는지 확인하지 "
-            "않고 시퀀스의 가운데를 집으면 정확히 이 파일이 막으려는 오답이 나온다."
-        )
-    return features[:, index, :].sum(dim=1)
+    grid = _grid_of(features)
+    return _token_scalar(model_name, features, grid // 2, grid // 2)
