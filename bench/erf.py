@@ -95,6 +95,25 @@ def peak_location(erf: np.ndarray) -> tuple[int, int]:
     return int(row), int(col)
 
 
+def _require_mass(erf: np.ndarray) -> None:
+    """질량이 0인 맵을 반경 계산에 넣지 못하게 막는다.
+
+    전부 0인 ERF는 이 저장소가 이미 한 번 물린 실패 모드다(Task 4: DeiT의 `norm`
+    캡처에서 16장 중 11장이 정확히 0). 가드가 없으면 예외도 NaN도 아닌 그럴듯한
+    숫자가 나온다 — `erf / erf.sum()`이 0/0 = NaN 배열이 되고, NaN 비교가 전부
+    False라 `np.searchsorted`가 0을 돌려주며, `mass_radius`가 "중심에서 가장 가까운
+    픽셀까지의 거리" 0.7071을 반환한다. 하필 그 0.71이 cls 토큰 게이트
+    (random_init 반경 < natural 반경)를 **통과한다.** 측정이 통째로 비었는데
+    게이트가 초록불을 주는 셈이라, 조용히 넘기지 않고 여기서 터뜨린다.
+    """
+    total = erf.sum()
+    if not total > 0:
+        raise ValueError(
+            f"ERF 질량이 0이다(sum={total}) — 반경이 정의되지 않는다. "
+            "캡처 지점이 gradient를 전혀 받지 못했는지 확인할 것."
+        )
+
+
 def _distance_from_center(erf: np.ndarray) -> np.ndarray:
     rows, cols = np.indices(erf.shape)
     center_row = (erf.shape[0] - 1) / 2
@@ -114,6 +133,7 @@ def mass_radius(erf: np.ndarray, fraction: float = 0.5) -> float:
     있어도 코어 크기를 그대로 보고한다(`anisotropy_index`의 꼬리 지배와 같은
     문제를 피한다).
     """
+    _require_mass(erf)
     weights = (erf / erf.sum()).ravel()
     distances = _distance_from_center(erf).ravel()
     order = np.argsort(distances)
@@ -129,6 +149,7 @@ def rms_radius(erf: np.ndarray) -> float:
     함께 기록한다. 거리 제곱 가중이라 `mass_radius`보다 far-field 꼬리에
     훨씬 민감하다.
     """
+    _require_mass(erf)
     weights = erf / erf.sum()
     return float(np.sqrt((weights * _distance_from_center(erf) ** 2).sum()))
 

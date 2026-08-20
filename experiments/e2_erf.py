@@ -159,15 +159,23 @@ def run_erf(
 
                 # 정직성 기준 2·3이 쓰는 위치·크기 정보. 계획이 "위치(피크 좌표,
                 # 중심으로부터 거리)를 결과에 남긴다"고 요구하는데 지금까지는
-                # 산문으로만 존재했다. argmax와 가중 분위수라 예외가 날 여지가
-                # 없으므로 지표별 try 밖에 둔다.
-                peak_row, peak_col = peak_location(erf)
-                row.update(
-                    peak_row=peak_row,
-                    peak_col=peak_col,
-                    mass_radius=mass_radius(erf),
-                    rms_radius=rms_radius(erf),
-                )
+                # 산문으로만 존재했다.
+                #
+                # 다른 지표와 똑같이 자기 try 안에 둔다. "argmax와 가중 분위수라
+                # 예외가 날 여지가 없다"고 밖에 두었던 것이 잘못이었다 — 예외가
+                # 안 나는 게 문제였다. 질량이 0인 맵에서 mass_radius가 0.7071을
+                # 돌려주고 그 값이 cls 토큰 게이트를 통과한다. 이제 반경 함수가
+                # 터지므로, 그 사유가 error 열에 남고 나머지 지표는 살아야 한다.
+                try:
+                    peak_row, peak_col = peak_location(erf)
+                    row.update(
+                        peak_row=peak_row,
+                        peak_col=peak_col,
+                        mass_radius=mass_radius(erf),
+                        rms_radius=rms_radius(erf),
+                    )
+                except Exception as exc:
+                    errors.append(f"location: {type(exc).__name__}: {exc}")
 
                 try:
                     ai = anisotropy_index(erf)

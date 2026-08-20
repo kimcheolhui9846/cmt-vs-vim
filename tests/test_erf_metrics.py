@@ -248,3 +248,29 @@ def test_central_crop_removes_the_far_field_tail():
     central = anisotropy_index(central_crop(erf, size=128))
 
     assert central > whole
+
+
+def test_an_all_zero_map_is_refused_by_both_radii():
+    """전부 0인 ERF는 이 저장소가 이미 한 번 물린 실패 모드다 — Task 4에서
+    DeiT의 `norm` 캡처가 16장 중 11장을 정확히 0으로 냈다.
+
+    가드가 없으면 조용하고 **그럴듯한** 오답이 나온다. 0/0 = NaN이 채워진
+    배열에서 NaN 비교가 전부 False라 `searchsorted`가 0을 돌려주고,
+    `mass_radius`가 '중심에서 가장 가까운 픽셀까지의 거리' 0.7071을 반환한다.
+    0.71은 cls 토큰 게이트(random_init 반경 < natural 반경)를 **통과한다** —
+    측정이 통째로 비었는데 게이트는 초록불을 준다. 예외 없이 넘어가면 안 된다."""
+    zero = np.zeros((224, 224))
+
+    with pytest.raises(ValueError, match="0"):
+        mass_radius(zero)
+    with pytest.raises(ValueError, match="0"):
+        rms_radius(zero)
+
+
+def test_a_map_with_any_mass_is_still_accepted():
+    """가드가 정상 맵까지 막으면 안 된다. 커밋된 맵 중 가장 작은 합도 106이다."""
+    almost_empty = np.zeros((224, 224))
+    almost_empty[100, 100] = 1e-12
+
+    assert mass_radius(almost_empty) > 0
+    assert rms_radius(almost_empty) > 0

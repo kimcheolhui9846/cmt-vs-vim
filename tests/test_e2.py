@@ -406,3 +406,38 @@ def test_run_erf_asks_for_the_same_max_n_at_every_sample_size(tmp_path, monkeypa
 
     assert calls
     assert all(max_n == 8 for _, _, max_n in calls)
+
+
+def test_an_all_zero_map_leaves_the_radii_blank_instead_of_passing_the_gate(
+    tmp_path, monkeypatch
+):
+    """질량이 0인 맵은 반경 열을 비우고 사유를 error에 남겨야 한다.
+
+    예전엔 위치·반경 계산이 모든 try 밖에 있었다("예외가 날 여지가 없으므로").
+    예외가 안 나는 게 정확히 문제였다 — 전부 0인 맵에서 mass_radius가 0.7071을
+    돌려주고, 그 값이 cls 토큰 게이트(random_init 반경 < natural 반경)를
+    통과한다. 측정이 통째로 비었는데 게이트가 초록불을 주는 것이다.
+
+    accumulate_erf는 성공했으므로 status는 ok로 남고, 나머지 지표는 이 실패에
+    끌려 내려가면 안 된다."""
+    def empty_map(model_name, model, images, device="cuda"):
+        return np.zeros((224, 224))
+
+    _offline(monkeypatch)
+    monkeypatch.setattr(e2, "accumulate_erf", empty_map)
+    # 비등방 지수는 전부 0인 맵에서 따로 실패한다 — 이 테스트의 관심사가 아니므로
+    # 고정값으로 갈음하고 위치·반경 열만 본다.
+    monkeypatch.setattr(e2, "anisotropy_index", lambda erf: 1.0)
+    monkeypatch.setattr(e2, "principal_angle_deg", lambda erf: 30.0)
+    monkeypatch.setattr(e2, "decay_ratio", lambda erf: (1.0, 64))
+
+    df = run_erf(model_names=("deit_s",), sample_sizes=(4,), out_dir=tmp_path)
+
+    assert (df["status"] == "ok").all()
+    assert df["mass_radius"].isna().all(), "질량 0인 맵이 반경을 냈다"
+    assert df["rms_radius"].isna().all()
+    assert df["peak_row"].isna().all()
+    assert df["error"].str.contains("location").all()
+    # 격리 불변: 다른 지표는 살아 있어야 한다.
+    assert df["anisotropy"].notna().all()
+    assert df["decay_ratio"].notna().all()
