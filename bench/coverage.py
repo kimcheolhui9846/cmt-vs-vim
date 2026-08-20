@@ -56,3 +56,68 @@ def query_patch(
     order = np.lexsort((candidates[:, 1], candidates[:, 0], distance))
     best = candidates[order[0]]
     return int(best[0]), int(best[1])
+
+
+def population_size(void: np.ndarray) -> int:
+    """순위 모집단 크기 N. void를 뺀 픽셀 수다."""
+    return int((~void).sum())
+
+
+def object_pixels(object_mask: np.ndarray, void: np.ndarray) -> int:
+    """K. void를 뺀 마스크 픽셀 수다."""
+    return int((object_mask & ~void).sum())
+
+
+def random_baseline(k: int, n: int) -> float:
+    """무작위 정렬의 precision@K 기댓값. 정확히 K/N이다.
+
+    절대 임계값이 아니라 계산된 값이므로 게이트를 통과시키려고 조정할 여지가
+    없다 — E1에서 달성 불가능한 절대 기준을 걸었다가 가드를 푸는 방향으로 간
+    적이 있다. 모든 보고 수치를 이 바닥과 함께 싣는다.
+    """
+    if n <= 0:
+        raise ValueError(f"모집단 크기가 {n}이다")
+    return k / n
+
+
+def _valid(
+    attribution: np.ndarray, object_mask: np.ndarray, void: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """void를 뺀 (기여도, 객체 여부) 1차원 쌍."""
+    if not (attribution.shape == object_mask.shape == void.shape):
+        raise ValueError(
+            f"모양이 다르다: {attribution.shape}, {object_mask.shape}, {void.shape}"
+        )
+    keep = ~void
+    return attribution[keep], (object_mask & keep)[keep]
+
+
+def precision_at_k(
+    attribution: np.ndarray, object_mask: np.ndarray, void: np.ndarray
+) -> float:
+    """상위 K개 기여도 픽셀 중 마스크 안의 비율. K는 마스크 픽셀 수다.
+
+    주 지표다. 순위만 쓰므로 기여도의 척도에 면역이고 — 세 모델의 gradient
+    크기는 애초에 같은 단위가 아니다 — K가 달라도 값이 비교 가능하다.
+    """
+    scores, inside = _valid(attribution, object_mask, void)
+    k = int(inside.sum())
+    if k == 0:
+        raise ValueError("K가 0이다 — void를 뺀 마스크가 비었다")
+    order = np.argsort(-scores, kind="stable")
+    return float(inside[order][:k].sum()) / k
+
+
+def mass_fraction(
+    attribution: np.ndarray, object_mask: np.ndarray, void: np.ndarray
+) -> float:
+    """마스크가 가져가는 기여도 질량의 비율.
+
+    보조 지표다. precision@K와 달리 크기를 쓰므로, 두 지표가 갈리면 그 자체가
+    정보다 — 순위는 맞는데 질량이 흩어져 있다는 뜻이다.
+    """
+    scores, inside = _valid(attribution, object_mask, void)
+    total = scores.sum()
+    if not total > 0:
+        raise ValueError(f"기여도 질량이 0이다(sum={total}) — 비율이 정의되지 않는다")
+    return float(scores[inside].sum() / total)
