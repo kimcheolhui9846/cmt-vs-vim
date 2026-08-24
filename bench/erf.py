@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from bench.attribution import gradient_map
 from models.probes import center_token_scalar
 
 
@@ -21,9 +22,9 @@ def accumulate_erf(
     total = np.zeros(images.shape[-2:], dtype=np.float64)
 
     for image in images:
-        x = image.unsqueeze(0).to(device).clone().requires_grad_(True)
-        center_token_scalar(model_name, model, x).sum().backward()
-        grad = x.grad.detach().abs().sum(dim=1)[0].cpu().numpy().astype(np.float64)
+        grad = gradient_map(
+            lambda x: center_token_scalar(model_name, model, x), image, device=device
+        )
         peak = grad.max()
         if peak > 0:
             grad = grad / peak
