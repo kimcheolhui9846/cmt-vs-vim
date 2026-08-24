@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -59,7 +60,12 @@ def save_checkpoint(path: Path, model, optimizer, scaler, epoch: int) -> None:
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict(),
         "epoch": epoch,
+        # 세 난수 스트림을 전부 저장한다. drop_path·dropout은 CUDA RNG에서,
+        # timm.data.Mixup은 NumPy RNG에서 뽑는다 — 하나라도 빠지면 재개한 run이
+        # 끊기지 않은 run과 다른 난수 궤적을 타고, 그 사실이 어디에도 남지 않는다.
         "torch_rng": torch.get_rng_state(),
+        "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "numpy_rng": np.random.get_state(),
     }, tmp)
     tmp.replace(path)  # 쓰다 죽어도 이전 체크포인트가 남는다
 
@@ -70,6 +76,9 @@ def load_checkpoint(path: Path, model, optimizer, scaler) -> int:
     optimizer.load_state_dict(state["optimizer"])
     scaler.load_state_dict(state["scaler"])
     torch.set_rng_state(state["torch_rng"])
+    if state.get("cuda_rng") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda_rng"])
+    np.random.set_state(state["numpy_rng"])
     return state["epoch"] + 1
 
 
@@ -105,6 +114,25 @@ def _append_curve(path: Path, row: dict) -> None:
         writer.writerow(row)
 
 
+def _drop_curve_rows_from(path: Path, start: int) -> None:
+    """재개 직전에 epoch >= start인 곡선 행을 지운다.
+
+    루프 안에서 `_append_curve`가 `save_checkpoint`보다 먼저 실행되므로, 그 사이에
+    죽으면 체크포인트에는 반영되지 않은 epoch의 행이 CSV에 먼저 남는다. 재개하면
+    그 epoch을 다시 돌면서 같은 epoch에 대해 또 한 행을 적어 중복이 생긴다. 재개
+    시작(`start`) 이전에 그런 미확정 행을 지워, 다시 돌 때 epoch당 정확히 한 행만
+    남게 한다.
+    """
+    if not path.exists():
+        return
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        rows = [row for row in csv.DictReader(handle) if int(row["epoch"]) < start]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CURVE_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def train(model, train_loader, val_loader, cfg: TrainConfig, ckpt_path: Path,
           curve_path: Path, device: str, mixup=None) -> dict:
     """한 run을 끝까지 돌린다. 체크포인트가 있으면 이어서 돈다."""
@@ -122,7 +150,12 @@ def train(model, train_loader, val_loader, cfg: TrainConfig, ckpt_path: Path,
     )
 
     ckpt_path = Path(ckpt_path)
-    start = load_checkpoint(ckpt_path, model, optimizer, scaler) if ckpt_path.exists() else 0
+    curve_path = Path(curve_path)
+    if ckpt_path.exists():
+        start = load_checkpoint(ckpt_path, model, optimizer, scaler)
+        _drop_curve_rows_from(curve_path, start)
+    else:
+        start = 0
 
     started = time.perf_counter()
     top1 = top5 = 0.0
