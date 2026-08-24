@@ -36,7 +36,7 @@ mamba-1p1p1
 
 | 모델 | 파라미터 | ImageNet Top-1 | 출처 |
 |------|----------|----------------|------|
-| CMT-Small | 25M | 83.5% | huawei-noah/Efficient-AI-Backbones (GitHub Releases) |
+| CMT-Small | 25M | 83.5% | ggjy/CMT.pytorch (GitHub Releases) |
 | Vim-S | 26M | 80.5% | hustvl/Vim (HuggingFace) |
 | DeiT-S | 22M | 79.8% | timm |
 

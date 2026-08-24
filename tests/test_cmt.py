@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from models.registry import build_model
@@ -40,10 +41,11 @@ def test_cmt_s_at_384_actually_rebuilds_the_stage_grids():
     assert first_stage_patches(large) > first_stage_patches(small)
 
 
-def test_pretrained_weights_are_not_silently_skipped():
-    """가중치 로딩은 E2/E3 계획으로 미뤘다. 조용히 무시하면 나중에 무작위 초기화
-    모델로 ERF를 재고도 아무도 모른다."""
-    import pytest
-
-    with pytest.raises(NotImplementedError, match="E2"):
-        build_model("cmt_s", pretrained=True)
+def test_pretrained_weights_are_refused_at_a_resolution_other_than_224():
+    """"224²만" 제약의 유일한 집행 장치다. CMT-S 공개 가중치는 224²에서 학습됐고,
+    다른 해상도는 상대 위치 bias 보간이 필요하다 — 보간한 가중치로 잰 값은 공개
+    정확도와 대응하지 않는다. 가드가 사라지면 예외 없이 잘못된 가중치로 측정이
+    진행되고 결과는 그럴듯해 보인다. 체크포인트를 받기 전에 터지므로 이 테스트는
+    네트워크를 건드리지 않는다."""
+    with pytest.raises(ValueError, match="224"):
+        build_model("cmt_s", pretrained=True, img_size=384)

@@ -40,13 +40,25 @@ FUSED_ADD_NORM_OP = "prim::PythonOp.LayerNormFn"
 
 
 def load_vim_small(pretrained: bool = False, img_size: int = 224) -> nn.Module:
-    """E1은 연산 비용만 재므로 가중치가 필요 없다. models/cmt.py와 같은 원칙."""
-    if pretrained:
-        raise NotImplementedError(
-            "Vim-S 가중치 로딩은 아직 없다. E1은 구조 비용만 재므로 필요하지 않고, "
-            "체크포인트 로딩은 E2/E3 계획에서 구현한다."
+    """224²에서는 공개 가중치를 그대로 로드한다(E2). models/cmt.py와 같은 원칙."""
+    model = _VIM_S_FACTORY(img_size=img_size)
+    if not pretrained:
+        return model
+
+    if img_size != 224:
+        raise ValueError(
+            f"Vim-S 공개 가중치는 224²로 학습됐다. img_size={img_size}는 위치 인코딩 "
+            "보간이 필요하고, 보간한 가중치로 잰 값은 공개 정확도와 대응하지 않는다. "
+            "E2는 224²만 쓴다."
         )
-    return _VIM_S_FACTORY(img_size=img_size)
+
+    import torch
+
+    from models.checkpoints import fetch, unwrap_state_dict
+
+    state = unwrap_state_dict(torch.load(fetch("vim_s"), map_location="cpu"))
+    model.load_state_dict(state, strict=True)
+    return model
 
 
 class _TracingRMSNorm(nn.Module):
