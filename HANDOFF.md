@@ -35,12 +35,30 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 
 ## 현재 상태
 
-- 브랜치: `feat/e1-resolution-sweep` (main에 머지 안 됨, 원격에 푸시됨)
-- 테스트: **97건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
+*(2026-08-24 갱신. 아래가 이 저장소의 현재 지형이다.)*
+
+- 테스트: **268건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
   `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
-- 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크 **전부 완료**)
-- SDD 원장: `.superpowers/sdd/2026-08-18-e1-resolution-sweep/progress.md` — git-ignored,
-  태스크별 완료·수정 라운드·이월된 minor가 전부 기록돼 있다
+- **E1·E2·E3 세 실험 모두 측정까지 완료**됐고, **PR 스택은 전부 `main`에
+  병합됐다.** 이제 `main`이 세 실험의 코드·결과·문서를 전부 담고 있다.
+
+| 브랜치 | PR | 병합 커밋 |
+|--------|----|-----------|
+| `feat/e1-resolution-sweep` | #1 | `a0b5beb` |
+| `feat/e2-erf` | #2 | `2b8f630` |
+| `feat/e3-dilution` | #3 | `e23153e` |
+| `chore/portable-pinned-env` | #4 | 이 PR |
+
+스택이었으므로 아래에서 위로 병합했고, **merge commit으로 병합했다** — squash로
+뭉개면 위쪽 PR의 diff에 아래 PR의 작업이 중복으로 뜨고, 이 저장소는 커밋 이력
+자체가 산출물이다. 원격 브랜치 넷은 병합 후에도 남겨 뒀다(측정 실행의 코드 상태를
+가리키는 해시들이 이력 안에 있으므로 지울 이유가 없다).
+
+- 계획: `docs/superpowers/plans/2026-08-{18,19,20}-*.md` — 세 실험 모두 전 태스크 완료
+- SDD 원장: `.superpowers/sdd/<계획이름>/progress.md` — git-ignored. 태스크별 완료·수정
+  라운드·이월된 minor·컨트롤러가 내린 판단이 전부 기록돼 있다. E3의 원장에는 그 위에
+  `task-9-facts.txt`가 있는데, **`results/e3/README.md`에 적힌 모든 수치의 출처**이자
+  무엇을 단독 인용해도 되는지에 대한 판정(ruling A~I)이다. PR이 병합될 때까지 지우지 않는다
 
 ### 완료된 태스크
 
@@ -58,7 +76,7 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 | 10 | `experiments/e1_resolution_sweep.py` | sweep 오케스트레이션 |
 | 11 | `tests/test_sanity.py` | DeiT-S 공개값 4.6G 대조 (실측 4.6083G, 비율 1.002) |
 | 12 | `figures/e1_plot.py` | CSV → 5패널 그림 |
-| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`) |
+| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`). 출처·인용 규칙은 `results/e1/README.md` |
 
 ## 고정 측정 환경 (구축 완료)
 
@@ -76,9 +94,17 @@ timm    0.9.12     mamba-1p1p1 (Vim 포크)    causal_conv1d 1.1.0
 RTX 3070 Ti (sm_86), 드라이버 591.86
 ```
 
-저장소 명령을 이 환경에서 돌리는 래퍼는 스크래치패드의 `wsl/run.sh`에 있다.
-없으면 다시 만들면 된다 — `CUDA_HOME`·`PATH`·`LD_LIBRARY_PATH`를 위 env로 잡고
-`CC=gcc-11`을 걸어 저장소 루트에서 실행하는 8줄짜리다.
+저장소 명령을 이 환경에서 돌리는 래퍼는 **`tools/run.sh`**에 있다(버전 관리 대상):
+
+```
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl bash tools/run.sh python -m pytest -q
+```
+
+2026-08-24까지 이 래퍼는 세션 스크래치패드에만 있었다. 그 경로는 세션이 끝나면
+사라지는데 저장소의 모든 수치가 이 래퍼에 걸려 있으므로 저장소 안으로 옮겼다.
+같은 작업에서 결함 세 개를 고쳤다 — 저장소 경로 하드코딩(이제 스크립트 위치에서
+유도), 고정 환경이 없을 때 조용히 시스템 python으로 넘어가던 것(이제 exit 1),
+하위 디렉터리 스크립트가 `bench`/`models`를 import하지 못하던 것(`PYTHONPATH`).
 
 ## 다음 세션에서 반드시 알아야 할 것
 
@@ -737,7 +763,7 @@ precision 비교는 쓰지 않았다. `deit_s` vs `cmt_s`의 순서는 어디에
 ## 이 계획 이후
 
 - ~~계획 2: E2 ERF 정량 측정~~ **완료 (2026-08-19)**
-- 계획 3: E3 effective attention 환원과 dilution 커버리지
+- ~~계획 3: E3 effective attention 환원과 dilution 커버리지~~ **완료 (2026-08-24)**
 - 계획 4: E4 2×2 요인 학습 ablation (Tiny-ImageNet, seed 3, epochs 300)
 - 계획 5: 논문 v2 · 포트폴리오 프로젝트 · 벨로그 후속 글
 
