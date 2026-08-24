@@ -35,22 +35,24 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 
 ## 현재 상태
 
-*(2026-08-24 갱신. 아래 표가 이 저장소의 현재 지형이다.)*
+*(2026-08-24 갱신. 아래가 이 저장소의 현재 지형이다.)*
 
 - 테스트: **268건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
   `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
-- **E1·E2·E3 세 실험 모두 측정까지 완료**됐고, PR 세 개가 순서대로 쌓여 있다.
-  아래에서 위로 병합해야 각 PR의 diff가 자기 작업만 남는다.
+- **E1·E2·E3 세 실험 모두 측정까지 완료**됐고, **PR 스택은 전부 `main`에
+  병합됐다.** 이제 `main`이 세 실험의 코드·결과·문서를 전부 담고 있다.
 
-| 브랜치 | PR | base | 상태 |
-|--------|----|------|------|
-| `feat/e1-resolution-sweep` | #1 | `main` | 열림 |
-| `feat/e2-erf` | #2 | `feat/e1-resolution-sweep` | 열림 |
-| `feat/e3-dilution` | #3 | `feat/e2-erf` | 열림 |
-| `chore/portable-pinned-env` | 없음 | `feat/e3-dilution` | 푸시됨, PR 미생성 |
+| 브랜치 | PR | 병합 커밋 |
+|--------|----|-----------|
+| `feat/e1-resolution-sweep` | #1 | `a0b5beb` |
+| `feat/e2-erf` | #2 | `2b8f630` |
+| `feat/e3-dilution` | #3 | `e23153e` |
+| `chore/portable-pinned-env` | #4 | 이 PR |
 
-`chore/portable-pinned-env`는 래퍼를 저장소로 들여오고 `CLAUDE.md`·`.gitattributes`를
-추가한 브랜치다. E3가 병합된 뒤에 PR을 올리는 편이 깔끔하다.
+스택이었으므로 아래에서 위로 병합했고, **merge commit으로 병합했다** — squash로
+뭉개면 위쪽 PR의 diff에 아래 PR의 작업이 중복으로 뜨고, 이 저장소는 커밋 이력
+자체가 산출물이다. 원격 브랜치 넷은 병합 후에도 남겨 뒀다(측정 실행의 코드 상태를
+가리키는 해시들이 이력 안에 있으므로 지울 이유가 없다).
 
 - 계획: `docs/superpowers/plans/2026-08-{18,19,20}-*.md` — 세 실험 모두 전 태스크 완료
 - SDD 원장: `.superpowers/sdd/<계획이름>/progress.md` — git-ignored. 태스크별 완료·수정
@@ -74,7 +76,7 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 | 10 | `experiments/e1_resolution_sweep.py` | sweep 오케스트레이션 |
 | 11 | `tests/test_sanity.py` | DeiT-S 공개값 4.6G 대조 (실측 4.6083G, 비율 1.002) |
 | 12 | `figures/e1_plot.py` | CSV → 5패널 그림 |
-| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`) |
+| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`). 출처·인용 규칙은 `results/e1/README.md` |
 
 ## 고정 측정 환경 (구축 완료)
 
@@ -761,7 +763,7 @@ precision 비교는 쓰지 않았다. `deit_s` vs `cmt_s`의 순서는 어디에
 ## 이 계획 이후
 
 - ~~계획 2: E2 ERF 정량 측정~~ **완료 (2026-08-19)**
-- 계획 3: E3 effective attention 환원과 dilution 커버리지
+- ~~계획 3: E3 effective attention 환원과 dilution 커버리지~~ **완료 (2026-08-24)**
 - 계획 4: E4 2×2 요인 학습 ablation (Tiny-ImageNet, seed 3, epochs 300)
 - 계획 5: 논문 v2 · 포트폴리오 프로젝트 · 벨로그 후속 글
 
