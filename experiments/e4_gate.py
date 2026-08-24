@@ -9,8 +9,8 @@
 배선 오류, 그리고 이 함수 내부에서 자기모순인 라벨링(`xs`/`ys`를 만드는 방식
 자체가 어긋나면 그 결과로도 못 외움) — 전부 200장/300 step 안에 못 외우는
 것으로 드러난다. `overfit_subset`은 99시간짜리 본 학습이 실제로 지날
-`bench.train.train_one_epoch`를 그대로 태우므로, 그 함수 안의 로더 순회·손실
-평균·mixup 분기에 있는 버그도 이 경로로 실행된다.
+`bench.train.train_one_epoch`를 그대로 태우므로, 그 함수의 로더 순회·손실
+평균 자체에 있는 버그도 이 경로로 실행된다.
 
 **이 관문이 잡지 못하는 것**: (1) 검증(val) 분할의 라벨 매핑 어긋남 — 이 함수는
 `train` 분할에서 `ImageFolder`로 이미지와 라벨을 같은 호출로 얻으므로, 그 매핑이
@@ -83,9 +83,11 @@ def overfit_subset(cell: str, n: int = 200, steps: int = 300,
 
     # 99시간짜리 본 학습이 실제로 지날 함수(train_one_epoch)를 그대로 태운다.
     # 고정 배치 하나를 원소 하나짜리 "로더" [(xs, ys)]로 감싸면, 이 함수를
-    # 부를 때마다 그 배치를 정확히 한 번 학습한다 — 로더 순회·손실 평균·mixup
-    # 분기가 전부 본 학습과 같은 코드 경로를 지난다. mixup은 본 학습에서도
-    # 끌 수 있는 옵션이므로 여기서는 None을 그대로 넘긴다.
+    # 부를 때마다 그 배치를 정확히 한 번 학습한다 — 로더 순회·손실 평균이
+    # 본 학습과 같은 코드 경로를 지난다. mixup은 여기서 None으로 고정한다
+    # (본 학습에서는 켤 수 있는 옵션이다) — 켜면 200장을 그대로 외우는 것
+    # 자체가 불가능해지고, 이 None 때문에 train_one_epoch 안의 mixup 적용
+    # 분기는 이 관문에서 실행되지 않는다.
     for step in range(steps):
         train_one_epoch(model, [(xs, ys)], optimizer, scaler, criterion, device,
                         lr_at(step, cfg), mixup=None)
