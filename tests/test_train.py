@@ -121,33 +121,25 @@ def test_resume_restores_all_rng_streams(tmp_path):
     assert (np.random.rand(4) == expected_numpy).all()
 
 
-def test_resume_does_not_duplicate_curve_rows(tmp_path):
-    """곡선 기록과 체크포인트 저장 사이에 죽으면 재개한 run이 같은 epoch을 다시
-    써서 CSV에 중복 행이 생길 수 있다 — 논문이 인용하는 결과 파일이 오염된다.
+def test_fresh_run_does_not_duplicate_curve_rows(tmp_path):
+    """체크포인트를 한 번도 못 쓰고 죽은 뒤 재시작하는, 최초 run에서만 나는
+    경우를 재현한다 — 논문이 인용하는 결과 파일이 오염되는 경로다.
 
-    체크포인트가 곡선보다 한 epoch 뒤처진 상태("epoch 0 곡선 행은 이미 썼지만
-    체크포인트는 아직 epoch 0을 확정하지 못하고 죽은 상황")를 직접 구성해 재개를
-    흉내낸다. 재개 후에도 epoch당 정확히 한 행만 남아야 한다.
+    epoch 0을 다 돌아 곡선 행은 썼지만 `save_checkpoint`가 한 번도 실행되기
+    전에 죽으면, 재시작 시점에는 체크포인트 파일 자체가 없다(즉 곡선에는
+    epoch 0 행이 있는데 체크포인트는 없음 — 위 테스트의 "체크포인트가 한
+    epoch 뒤처진" 상황과 다르다). 재개 정리를 "체크포인트가 있을 때만" 돌리면
+    이 경우를 놓쳐 epoch 0이 중복된다.
     """
     ckpt_path = tmp_path / "ckpt.pt"
     curve_path = tmp_path / "curve.csv"
 
-    model = nn.Linear(4, 3)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    # train()이 내부에서 만드는 scaler와 활성화 여부를 맞춰야 한다. 여기서
-    # enabled=False로 저장하면 train()이 새로 만드는 enabled=True scaler가
-    # 빈 state_dict를 받아 load_state_dict에서 바로 터진다 — 이 테스트가
-    # 검증하려는 곡선 중복 로직과 무관한 실패다.
-    scaler = torch.cuda.amp.GradScaler()
-
-    # epoch 0을 다 돌아 곡선 행은 썼지만 체크포인트 저장 전에 죽은 상황:
-    # 곡선에는 epoch 0 행이 있는데 체크포인트는 epoch -1(= "아직 아무 epoch도
-    # 확정 못함")을 가리킨다.
     _append_curve(curve_path, {
         "epoch": 0, "train_loss": 9.9, "val_top1": 0.0, "val_top5": 0.0, "lr": 1e-4,
     })
-    save_checkpoint(ckpt_path, model, optimizer, scaler, epoch=-1)
+    assert not ckpt_path.exists()  # save_checkpoint가 한 번도 실행되지 못한 상황
 
+    model = nn.Linear(4, 3)
     xs = torch.randn(4, 4, dtype=torch.float32)
     ys = torch.randint(0, 3, (4,))
     loader = [(xs, ys)]

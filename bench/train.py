@@ -151,11 +151,14 @@ def train(model, train_loader, val_loader, cfg: TrainConfig, ckpt_path: Path,
 
     ckpt_path = Path(ckpt_path)
     curve_path = Path(curve_path)
-    if ckpt_path.exists():
-        start = load_checkpoint(ckpt_path, model, optimizer, scaler)
-        _drop_curve_rows_from(curve_path, start)
-    else:
-        start = 0
+    start = load_checkpoint(ckpt_path, model, optimizer, scaler) if ckpt_path.exists() else 0
+    # 체크포인트가 아예 없는 최초 run도 미확정 곡선 행을 가질 수 있다 — epoch 0을
+    # 다 돌아 곡선 행은 썼지만 save_checkpoint가 한 번도 실행되기 전에 죽으면,
+    # 재시작 시점에는 체크포인트 파일 자체가 없다(start=0). 이 정리를
+    # `if ckpt_path.exists():` 안에 가둬두면 그 경우를 놓쳐 epoch 0이 중복된다.
+    # start=0이면 이 호출이 곡선 파일을 통째로 비우므로, 최초 run은 항상 빈
+    # 곡선에서 시작한다.
+    _drop_curve_rows_from(curve_path, start)
 
     started = time.perf_counter()
     top1 = top5 = 0.0
