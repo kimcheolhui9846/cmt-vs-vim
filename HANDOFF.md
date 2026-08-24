@@ -76,9 +76,17 @@ timm    0.9.12     mamba-1p1p1 (Vim 포크)    causal_conv1d 1.1.0
 RTX 3070 Ti (sm_86), 드라이버 591.86
 ```
 
-저장소 명령을 이 환경에서 돌리는 래퍼는 스크래치패드의 `wsl/run.sh`에 있다.
-없으면 다시 만들면 된다 — `CUDA_HOME`·`PATH`·`LD_LIBRARY_PATH`를 위 env로 잡고
-`CC=gcc-11`을 걸어 저장소 루트에서 실행하는 8줄짜리다.
+저장소 명령을 이 환경에서 돌리는 래퍼는 **`tools/run.sh`**에 있다(버전 관리 대상):
+
+```
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl bash tools/run.sh python -m pytest -q
+```
+
+2026-08-24까지 이 래퍼는 세션 스크래치패드에만 있었다. 그 경로는 세션이 끝나면
+사라지는데 저장소의 모든 수치가 이 래퍼에 걸려 있으므로 저장소 안으로 옮겼다.
+같은 작업에서 결함 세 개를 고쳤다 — 저장소 경로 하드코딩(이제 스크립트 위치에서
+유도), 고정 환경이 없을 때 조용히 시스템 python으로 넘어가던 것(이제 exit 1),
+하위 디렉터리 스크립트가 `bench`/`models`를 import하지 못하던 것(`PYTHONPATH`).
 
 ## 다음 세션에서 반드시 알아야 할 것
 
