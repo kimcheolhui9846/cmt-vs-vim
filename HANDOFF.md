@@ -567,6 +567,73 @@ N=256 셀에서도 `cmt_s`/natural이 1.0754 → 1.0297로 **4.25%**, `vim_s`/na
   쓰려면 비등방 지수가 1에서 충분히 먼 셀인지 먼저 확인할 것 — ill-conditioning
   캐비아트는 없어진 게 아니라 그 셀에 해당하지 않았을 뿐이다.
 
+## E3 — dilution 정량 측정 완료 (2026-08-24)
+
+브랜치 `feat/e3-dilution`, 계획 `.superpowers/sdd/2026-08-20-e3-dilution/`(9 태스크
+전부 완료), 설계 문서 `docs/superpowers/specs/2026-08-20-e3-dilution-design.md`.
+
+**무엇을 쟀는가.** 논문 3.2절의 주장 — "객체가 K개 토큰에 걸치면 attention 평균
+가중치가 1/K로 희석되지만, SSM은 상태에 누적되므로 희석되지 않는다" — 을 검증하기
+위해, attention 가중치나 SSM의 effective attention을 직접 계산하는 대신
+**gradient 귀속도**로 세 모델(`deit_s`·`cmt_s`·`vim_s`)을 같은 축(입력 픽셀 공간)에
+올렸다. VOC 2012 인스턴스 마스크에서 크롭 후 512px 이상인 객체 5042개 중 세 모델의
+패치 격자 전부에서 질의 토큰을 찾을 수 있는 4300개를 추리고, 면적 구간(6구간)당
+100개씩 층화 추출한 600개를 `pretrained`·`random_init`(시드 고정) 두 조건 ×
+세 모델로 재, 3모델×2조건×600 = 3600행을 얻었다(`status` 전부 `ok`,
+`no_query_patch` 0). 지표는 precision@K(주), 마스크 내 질량 비율(보조), 무작위
+기준선 `K/N`. 결과는 `results/e3/{objects.csv, coverage.csv, env.json,
+e3_coverage.png, README.md}`, 전부 **`f1a430c`**("fix: draw the random baseline
+once and keep canvas strings ASCII")가 커밋한 실행에서 나왔고 `env.json`의
+`git_commit`도 같은 해시다(E2와 달리 dirty tree 문제 없음).
+
+**이 측정이 검증하지 않는 것.** "가중치가 1/K로 희석된다"는 수식 자체를 재지
+않는다 — attention의 정규화된 합도, SSM의 effective attention `w(t,s) = C_t ·
+Ā_{t:s+1} · B̄_s`도 계산하지 않았다. 재는 것은 그 귀결("객체가 커지면 기여도가
+객체 밖으로 새는가")뿐이다. 논문에 쓸 때 이 구분을 명시할 것.
+
+**헤드라인 방향 — 거꾸로 읽기 쉽다.** raw precision@K는 객체가 커질수록
+**오른다**(예: `deit_s`/`pretrained` `<2%`→`>=40%` 0.423→0.661). 무작위
+기준선(`K/N`)이 더 빨리 오르기 때문이다(0.018→0.583). **떨어지는 것은 기준선
+대비 초과분**이고, 이 초과분은 세 모델 모두 큰 객체 쪽에서 확연히 준다(`<2%`→
+`>=40%` 배율: `deit_s` 5.2배, `cmt_s` 4.7배, `vim_s` 4.5배). raw precision을
+기준선 없이 단독으로 인용하면 이 실험을 반대 방향으로 서술하게 된다.
+
+**사전 등록 예측(측정 전에 커밋, 수정하지 않음) — 하나는 빗나가고 하나는
+맞았다.** 예측 1(dilution 정도: DeiT 가파른 하락, CMT 하락, Vim 완만/유지)은
+**빗나갔다** — 세 모델이 비슷한 배율로 함께 떨어지고, Vim은 "완만하거나 유지"는
+커녕 모든 면적 구간에서 초과분이 셋 중 가장 낮다. 이는 논문 3.2절이 암시하는
+방향과 반대다. 예측 2(종횡비: Vim만 세로형에서 뚜렷이 낮음)는 **적중했다** —
+`pretrained` tall−wide precision: `deit_s` +0.002(z 0.13), `cmt_s`
++0.009(z 0.39), `vim_s` **−0.088(z −4.01)**. `random_init`에서는 Vim의 격차가
+−0.2425(z −15.86)로 더 벌어진다. 이는 E2가 잰 `vim_s` decay_ratio
+1.345(natural)·1.899(random_init) — 둘 다 deit·cmt는 거의 1.0/1.0 근방 — 와
+**독립적인 교차 확인**이며, Vim의 세로형 열위가 학습이 아니라 구조(scan 순서)에서
+온다는 이 branch에서 가장 강한 결과다.
+
+**E3는 E2의 재측정이 아니다.** E2 `pretrained` mass_radius 순서(vim 79.9 > cmt
+78.6 > deit 72.3)와 E3 `pretrained` precision 순서(deit 0.473 > cmt 0.398 >
+vim 0.333)는 같지 않다 — 사실상 뒤집혀 있다. ERF가 가장 넓은 Vim이 precision은
+가장 낮다. "얼마나 멀리 퍼지는가"와 "어디에 떨어지는가"는 서로 다른 성질이다.
+
+**`random_init` 대조군은 혼입돼 있다 — cross-condition 비교에 쓰지 말 것.**
+`cmt_s`·`vim_s`는 학습 전이 학습 후보다 precision이 더 높다(cmt 0.605 vs 0.398,
+vim 0.407 vs 0.333). 이는 "학습이 통합을 방해한다"가 아니라, 학습 전 모델의
+기여도가 질의 토큰 근처(정의상 마스크 안) 극소수 픽셀에 몰려 있어서(mass_mean이
+`random_init`에서 세 모델 다 훨씬 큼, E2의 좁은 random_init ERF와 같은 패턴)
+precision이 인위적으로 부풀려지는 것이다. 단, `deit_s`는 mass_radius가 작은데도
+random_init precision이 셋 중 가장 낮아(0.274) 이 설명이 모델 간 순서까지
+설명하지는 못한다 — cross-condition 비교가 무효라고만 말하고, 그 이상은 주장하지
+않는다. 종횡비 분할처럼 **같은 조건 안에서의 비교는 영향받지 않는다.**
+
+**단일 값으로 인용해도 되는 것:** Vim의 종횡비 격차(pretrained −0.088±0.022
+z −4.01, n=161/111; random_init −0.2425 z −15.86)와 기준선을 함께 적은 구간별
+초과분.
+**단독으로 인용하면 안 되는 것:** `random_init`의 precision 값 자체(혼입, 위
+참고), 기준선 없는 raw precision(방향이 반대로 읽힘).
+
+**근거 커밋:** 측정 코드와 산출물 전체 `f1a430c`, `env.json`도 같은 해시. 자세한
+표와 산문은 `results/e3/README.md`.
+
 ## 이 계획 이후
 
 - ~~계획 2: E2 ERF 정량 측정~~ **완료 (2026-08-19)**
