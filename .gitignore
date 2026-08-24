@@ -6,9 +6,10 @@ venv/
 *.egg-info/
 
 # 체크포인트와 데이터셋 — 용량이 커서 추적하지 않는다.
-# checkpoints/ 는 더 이상 통째로 막지 않는다 — cmt_small.pth·vim_s_midclstok_80p5acc.pth
-# 두 사전학습 체크포인트는 추적 대상이다. E4가 만드는 열두 개 체크포인트만 막는다.
-checkpoints/e4_*.pt
+# E4가 만드는 체크포인트(checkpoints/e4_*.pt)는 이미 *.pt 규칙에 걸리지만,
+# save_checkpoint가 원자적 교체 전에 쓰는 checkpoints/e4_*.tmp는 어느 확장자
+# 규칙에도 걸리지 않는다 — 통짜로 막아 둔다.
+checkpoints/
 data/*
 !data/__init__.py
 !data/voc.py

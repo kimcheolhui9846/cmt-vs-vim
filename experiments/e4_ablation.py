@@ -115,7 +115,11 @@ def main(out_dir: str = "results/e4") -> None:
                 "hours": round(result["hours"], 3),
                 "status": "ok",
             })
-        except BaseException as exc:  # OOM도 데이터로 남긴다
+        except Exception as exc:  # OOM(RuntimeError)도 데이터로 남긴다.
+            # BaseException을 잡지 않는다 — 그러면 오퍼레이터가 99시간짜리 job
+            # 도중에 Ctrl-C로 멈춘 것(KeyboardInterrupt)까지 이 run의 실패로
+            # 기록하고 다음 run으로 넘어가 버린다. KeyboardInterrupt·SystemExit는
+            # 여기를 지나쳐 그대로 올라가 job을 멈춘다.
             row.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
 
         rows = [r for r in rows if not (r["cell"] == cell and int(r["seed"]) == seed)]
