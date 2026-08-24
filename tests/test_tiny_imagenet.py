@@ -68,3 +68,43 @@ def test_missing_annotation_file_fails_loudly(tmp_path):
     (base / "val" / "val_annotations.txt").unlink()
     with pytest.raises(FileNotFoundError):
         val_items(base)
+
+
+import torch
+
+from data.tiny_imagenet import (
+    TRAIN_CROP_SCALE,
+    build_eval_transform,
+    build_mixup,
+    build_train_transform,
+)
+
+
+def test_train_crop_scale_is_the_documented_deviation():
+    """DeiT 원 레시피는 (0.08, 1.0)이다. 64px에서 8%는 5x5 픽셀이라 라벨이 무의미해진다.
+
+    이 상수가 바뀌면 네 칸의 비교 자체는 유지되지만 문서와 어긋난다.
+    """
+    assert TRAIN_CROP_SCALE == (0.6, 1.0)
+
+
+def test_train_transform_outputs_the_training_resolution():
+    out = build_train_transform(size=64)(Image.new("RGB", (64, 64)))
+    assert out.shape == (3, 64, 64)
+
+
+def test_eval_transform_is_deterministic():
+    """평가 경로에 무작위가 남아 있으면 같은 체크포인트가 매번 다른 top-1을 낸다."""
+    transform = build_eval_transform(size=64)
+    image = Image.new("RGB", (64, 64), color=(31, 63, 127))
+    assert torch.equal(transform(image), transform(image))
+
+
+def test_mixup_produces_soft_targets():
+    """mixup이 꺼져 있으면 라벨이 정수로 남는다 — 레시피가 적용되지 않은 것이다."""
+    mixup = build_mixup(num_classes=200)
+    x = torch.randn(4, 3, 64, 64)
+    y = torch.tensor([1, 2, 3, 4])
+    _, soft = mixup(x, y)
+    assert soft.shape == (4, 200)
+    assert not torch.equal(soft, torch.nn.functional.one_hot(y, 200).float())

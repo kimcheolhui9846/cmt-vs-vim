@@ -63,3 +63,70 @@ class TinyImageNetVal(Dataset):
     def __getitem__(self, i: int):
         path, label = self.items[i]
         return self.transform(Image.open(path).convert("RGB")), label
+
+
+from torch.utils.data import DataLoader
+from torchvision.datasets import ImageFolder
+
+from data.voc import IMAGENET_MEAN, IMAGENET_STD
+
+# DeiT 원 레시피는 (0.08, 1.0)이다. 64px에서 8%까지 잘라내면 남는 것이 5x5 픽셀이라
+# 라벨이 무의미해진다. 네 칸에 동일 적용하므로 요인 비교에는 영향이 없다.
+TRAIN_CROP_SCALE = (0.6, 1.0)
+
+
+def build_train_transform(size: int = 64):
+    from timm.data import create_transform
+
+    return create_transform(
+        input_size=size,
+        is_training=True,
+        scale=TRAIN_CROP_SCALE,
+        ratio=(3 / 4, 4 / 3),
+        auto_augment="rand-m9-mstd0.5-inc1",
+        interpolation="bicubic",
+        re_prob=0.25,
+        re_mode="pixel",
+        re_count=1,
+        mean=IMAGENET_MEAN,
+        std=IMAGENET_STD,
+    )
+
+
+def build_eval_transform(size: int = 64):
+    from torchvision import transforms
+
+    return transforms.Compose([
+        transforms.Resize(size, interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.CenterCrop(size),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
+
+
+def build_mixup(num_classes: int = NUM_CLASSES):
+    from timm.data import Mixup
+
+    return Mixup(
+        mixup_alpha=0.8,
+        cutmix_alpha=1.0,
+        label_smoothing=0.1,
+        num_classes=num_classes,
+    )
+
+
+def build_loaders(
+    root: Path, batch_size: int, workers: int, size: int = 64
+) -> tuple[DataLoader, DataLoader]:
+    train = ImageFolder(str(root / "train"), transform=build_train_transform(size))
+    if train.class_to_idx != class_to_index(root):
+        raise RuntimeError(
+            "ImageFolder의 클래스 인덱스가 val 매핑과 다르다 — 라벨이 어긋난다"
+        )
+    val = TinyImageNetVal(root, transform=build_eval_transform(size))
+    return (
+        DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=workers,
+                   pin_memory=True, drop_last=True, persistent_workers=workers > 0),
+        DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=workers,
+                   pin_memory=True, persistent_workers=workers > 0),
+    )
