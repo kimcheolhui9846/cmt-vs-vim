@@ -1,0 +1,252 @@
+"""E1 — 해상도 sweep 실측.
+
+논문 표 1은 손으로 계산한 추정값이었다. 이 스크립트가 그 자리를 대체할 실측
+CSV를 만든다. 그림과 표는 이 CSV만 읽는다.
+"""
+import json
+from pathlib import Path
+
+import pandas as pd
+import torch
+
+from bench.budget import apply_memory_budget
+from bench.env import snapshot
+from bench.flops import count_flops
+from bench.latency import LatencyResult, measure_latency
+from bench.memory import is_oom, measure_peak_memory
+from bench.throughput import measure_throughput
+from models.registry import MODEL_NAMES, build_model, traceable
+
+RESOLUTIONS = (224, 384, 512, 768, 1024)
+
+# 배치 1 latency는 커널 실행 오버헤드에 좌우돼 같은 조건에서도 값이 달라진다.
+# 한 셀을 여러 블록으로 나눠 재고 그 편차를 CSV에 남긴다.
+LATENCY_REPEATS = 3
+
+# 반복 간 최대/최소 비가 이 값을 넘으면 그 셀은 단일 값으로 인용할 수 없다.
+LATENCY_SPREAD_WARN = 1.2
+
+COLUMNS = [
+    "model",
+    "resolution",
+    "params",
+    "flops_traced",
+    "flops_analytic",
+    "flops_total",
+    "flops_uncounted_ops",
+    "flops_unexpected_ops",
+    "latency_ms",
+    "latency_min_ms",
+    "latency_max_ms",
+    "latency_repeats_ms",
+    "peak_allocated_bytes",
+    "peak_reserved_bytes",
+    "max_batch",
+    "images_per_sec",
+    "status",
+    "error",
+]
+
+
+def _op_handlers(model_name: str) -> dict:
+    if model_name == "vim_s":
+        from models.vim import VIM_OP_HANDLERS
+
+        return VIM_OP_HANDLERS
+    return {}
+
+
+def _flops_device(model_name: str, device: str) -> str:
+    """Vim만 CUDA에서 센다.
+
+    selective scan과 causal conv1d가 CUDA 전용 커널이라 CPU에서는 트레이스 자체가
+    불가능하다. 나머지 둘은 CPU에서 세는 편이 낫다 — 그래프가 같아 값이 동일하고,
+    메모리에 들어가지 않는 셀에서도 연산량이 남는다.
+    """
+    return device if model_name == "vim_s" else "cpu"
+
+
+def _blank_row(model_name: str, resolution: int) -> dict:
+    row = {column: None for column in COLUMNS}
+    row.update(
+        model=model_name,
+        resolution=resolution,
+        flops_uncounted_ops="",
+        flops_unexpected_ops="",
+        latency_repeats_ms="",
+    )
+    return row
+
+
+def _warm_up(model, shape: tuple[int, ...], device: str, iters: int = 3) -> None:
+    """측정 전에 한 번 돌려 일회성 할당을 끝내 둔다."""
+    model = model.to(device).eval()
+    x = torch.zeros(1, *shape, device=device)
+    with torch.no_grad():
+        for _ in range(iters):
+            model(x)
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+
+
+def _measure_one(model_name: str, resolution: int) -> dict:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    shape = (3, resolution, resolution)
+
+    row = _blank_row(model_name, resolution)
+    row["status"] = "ok"
+
+    model = build_model(model_name, pretrained=False, img_size=resolution)
+    row["params"] = sum(p.numel() for p in model.parameters())
+
+    # FLOPs를 먼저 잰다. DeiT·CMT는 CPU 트레이스라 OOM이 날 수 없고, 그래서
+    # 메모리에 들어가지 않는 셀에서도 연산량은 남는다. Vim만 예외다 — 커널이 CUDA
+    # 전용이라 이 모델은 FLOPs 측정도 OOM 날 수 있다. 그때는 연산량 칸만 비우고
+    # 계속 간다. 셀 전체를 error로 날리면 그 해상도에서 OOM이 났다는 사실까지 잃는다.
+    try:
+        with traceable(model_name, model):
+            flops = count_flops(
+                model,
+                shape,
+                op_handlers=_op_handlers(model_name),
+                device=_flops_device(model_name, device),
+            )
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    else:
+        row["flops_traced"] = flops.traced
+        row["flops_analytic"] = flops.analytic
+        row["flops_total"] = flops.total
+        row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
+        row["flops_unexpected_ops"] = ";".join(flops.unexpected_uncounted_ops)
+
+    # 일회성 초기화(cuBLAS 워크스페이스·커널 로딩 등)를 기준선으로 밀어낸다.
+    # measure_latency의 워밍업은 reset_peak_memory_stats 뒤에 돌기 때문에, 이걸
+    # 하지 않으면 그 할당이 peak에 잡힌다. 프로세스에서 그 모델을 처음 돌리는
+    # 셀 하나만 부풀어(vim_s@224에서 0.347 GiB, 이후 셀은 0.117 GiB) 해상도가
+    # 오르는데 메모리는 줄어드는 불가능한 곡선이 나온다.
+    try:
+        _warm_up(model, shape, device)
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        # 여기서 OOM이면 아래 measure_peak_memory도 OOM이라 status="oom"으로 남는다
+
+    # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
+    # 1024²에서 150 iteration을 두 번 돌게 된다.
+    captured: dict[str, LatencyResult] = {}
+
+    def _timed_run() -> None:
+        captured["latency"] = measure_latency(
+            model, shape, device=device, repeats=LATENCY_REPEATS
+        )
+
+    memory = measure_peak_memory(_timed_run)
+    row["peak_allocated_bytes"] = memory.peak_allocated_bytes
+    row["peak_reserved_bytes"] = memory.peak_reserved_bytes
+    row["status"] = memory.status
+
+    latency = captured.get("latency")
+    if latency is not None:
+        row["latency_ms"] = latency.median_ms
+        row["latency_min_ms"] = latency.min_ms
+        row["latency_max_ms"] = latency.max_ms
+        # 원본을 남긴다. 요약값 셋은 전부 여기서 다시 계산할 수 있어야 한다.
+        row["latency_repeats_ms"] = ";".join(f"{v:.4f}" for v in latency.repeats_ms)
+
+    if memory.status == "oom":
+        return row
+
+    # 배치 탐색 안의 OOM은 _fits가 잡지만, 탐색이 끝난 뒤 그 배치로 실제 측정할 때
+    # 단편화로 OOM이 날 수 있다. 그걸 흘려보내면 셀 전체가 error가 되면서 이미 잰
+    # FLOPs·latency·메모리까지 함께 사라진다 — 첫 실행에서 실제로 두 셀을 그렇게 잃었다.
+    try:
+        throughput = measure_throughput(model, shape, device=device)
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        row["error"] = f"throughput OOM: {exc}"
+        return row
+
+    row["max_batch"] = throughput.batch
+    row["images_per_sec"] = throughput.images_per_sec
+    return row
+
+
+def _error_row(model_name: str, resolution: int, exc: BaseException) -> dict:
+    row = _blank_row(model_name, resolution)
+    row["status"] = "error"
+    row["error"] = f"{type(exc).__name__}: {exc}"
+    return row
+
+
+def run_sweep(
+    model_names: tuple[str, ...] = MODEL_NAMES,
+    resolutions: tuple[int, ...] = RESOLUTIONS,
+    out_dir: Path | str = "results/e1",
+) -> pd.DataFrame:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "sweep.csv"
+
+    # 예산을 먼저 건다. 이걸 안 걸면 WSL2가 VRAM 부족을 OOM으로 알리지 않고 시스템
+    # 메모리로 넘겨서, OOM 경계도 처리량도 물리 VRAM과 무관한 값이 된다.
+    budget = apply_memory_budget()
+    env = snapshot()
+    env["gpu_memory_budget_bytes"] = budget
+    (out_dir / "env.json").write_text(json.dumps(env, indent=2))
+
+    rows: list[dict] = []
+    for name in model_names:
+        for resolution in resolutions:
+            try:
+                rows.append(_measure_one(name, resolution))
+            except Exception as exc:  # 한 셀의 실패로 전체를 잃지 않는다
+                rows.append(_error_row(name, resolution, exc))
+            # 셀마다 다시 쓴다. 한 시간짜리 실행이 도중에 죽어도 앞의 결과는 남는다.
+            pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
+
+    df = pd.DataFrame(rows, columns=COLUMNS)
+
+    failed = df[df["status"] == "error"]
+    if not failed.empty:
+        cells = ", ".join(f"{r.model}@{r.resolution}" for r in failed.itertuples())
+        print(f"경고: {len(failed)}개 셀 실패 — {cells}. 숫자를 쓰기 전에 확인할 것.")
+
+    _warn_unreproducible_latency(df)
+
+    return df
+
+
+def _warn_unreproducible_latency(df: pd.DataFrame) -> None:
+    """반복이 갈린 셀을 실행 끝에 이름으로 부른다.
+
+    편차를 열에만 적어 두면 아무도 열지 않는다. 배치 1 latency는 커널 실행
+    오버헤드에 좌우돼서 이 경고가 뜨는 게 정상에 가깝다 — 그 셀의 값을 표에
+    단일 숫자로 싣지 않는 것이 목적이다.
+    """
+    low = pd.to_numeric(df["latency_min_ms"], errors="coerce")
+    high = pd.to_numeric(df["latency_max_ms"], errors="coerce")
+    spread = high / low.where(low > 0)
+
+    shaky = df[spread > LATENCY_SPREAD_WARN]
+    if shaky.empty:
+        return
+
+    cells = ", ".join(
+        f"{row.model}@{row.resolution} {spread[i]:.2f}배"
+        for i, row in zip(shaky.index, shaky.itertuples())
+    )
+    print(
+        f"경고: latency가 반복 간에 갈린 셀 {len(shaky)}개 — {cells}. "
+        "이 셀은 표에 단일 값으로 싣지 말 것."
+    )
+
+
+if __name__ == "__main__":
+    print(run_sweep().to_string(index=False))

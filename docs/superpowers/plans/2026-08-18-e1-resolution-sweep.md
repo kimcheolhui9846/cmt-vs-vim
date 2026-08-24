@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- Python 3.10.13, torch 2.1.1+cu118, `causal_conv1d>=1.1.0`, `mamba-1p1p1` — 버전 고정. Vim 커널이 버전에 민감하다.
-- WSL2에서 실행한다. Vision Mamba의 selective scan CUDA 커널이 Linux를 요구한다.
+- **실측 실행 환경(고정)**: Python 3.10.13, torch 2.1.1+cu118, `causal_conv1d>=1.1.0`, `mamba-1p1p1`, WSL2. `results/`에 커밋되는 모든 수치는 이 환경에서 나와야 한다. Vim 커널이 버전에 민감하고, selective scan이 Linux를 요구한다.
+- **개발·단위테스트 환경(무관)**: `bench/`와 `figures/`의 단위 테스트는 토이 모델과 CPU만 쓰므로 버전에 의존하지 않는다. WSL2 준비 전까지 Windows(Python 3.12, torch 2.6)에서 개발·검증해도 되지만, **그 환경에서 나온 측정값을 `results/`에 커밋하지 않는다.** Task 1의 스모크 테스트가 고정 환경 진입 관문이며, 통과 후 전체 테스트를 고정 환경에서 한 번 더 돌린다.
 - 순수 PyTorch selective scan 대체 금지. 5~10배 느려져 latency 측정이 무의미해진다.
 - 정밀도는 **fp32 고정**. AMP는 부록 전용이며 본 실험에서 섞지 않는다.
 - latency는 **batch=1, 워밍업 50회 후 100회 측정의 중앙값**.
@@ -477,8 +477,11 @@ git commit -m "feat: time inference with CUDA events instead of the wall clock"
 **Interfaces:**
 - Consumes: 없음
 - Produces: `bench.memory.measure_peak_memory(fn) -> MemoryResult`
-  - `MemoryResult`는 `peak_bytes: int | None`, `status: str` 필드를 가진 dataclass
+  - `MemoryResult`는 `peak_allocated_bytes: int | None`, `peak_reserved_bytes: int | None`, `status: str` 필드를 가진 dataclass
   - `status`는 `"ok"`, `"oom"`, `"no_cuda"` 중 하나
+  - `bench.memory._is_oom(exc) -> bool`
+
+두 통계를 모두 기록한다. `max_memory_allocated`는 텐서 수요량이라 재현성이 높고 논문에서 흔히 쓰는 값이며, `max_memory_reserved`는 캐싱 얼로케이터가 실제 잡은 VRAM이라 8GB 한계선과 직결된다. 비용이 사실상 0이므로 둘 다 남기고 논문에서 어느 쪽을 인용할지는 나중에 정한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -496,7 +499,30 @@ def test_oom_is_recorded_as_data_not_raised():
 
     result = measure_peak_memory(blows_up)
     assert result.status == "oom"
-    assert result.peak_bytes is None
+    assert result.peak_allocated_bytes is None
+    assert result.peak_reserved_bytes is None
+
+
+def test_runtime_error_worded_as_oom_is_also_recorded_as_oom():
+    """CUDA OOM은 OutOfMemoryError로만 오지 않는다. cuDNN 실패 등에서는 메시지에
+    'out of memory'가 든 평범한 RuntimeError로 샌다. 이걸 놓치면 sweep이
+    고해상도 셀에서 통째로 죽는데, 하필 거기가 논문 주장이 걸린 자리다."""
+
+    def blows_up():
+        raise RuntimeError("CUDA error: out of memory when allocating workspace")
+
+    result = measure_peak_memory(blows_up)
+    assert result.status == "oom"
+
+
+def test_unrelated_runtime_error_still_propagates():
+    """RuntimeError를 전부 삼키면 진짜 버그가 가짜 메모리 한계로 논문에 실린다."""
+
+    def has_a_bug():
+        raise RuntimeError("shape '[2, 3]' is invalid for input of size 7")
+
+    with pytest.raises(RuntimeError, match="invalid for input"):
+        measure_peak_memory(has_a_bug)
 
 
 def test_other_exceptions_still_propagate():
@@ -509,14 +535,25 @@ def test_other_exceptions_still_propagate():
         measure_peak_memory(has_a_bug)
 
 
+def test_no_cuda_is_reported_distinctly_from_oom(monkeypatch):
+    """세 상태 중 하나가 커버리지 0으로 나가면 안 된다."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    result = measure_peak_memory(lambda: None)
+    assert result.status == "no_cuda"
+    assert result.peak_allocated_bytes is None
+    assert result.peak_reserved_bytes is None
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA 필요")
-def test_successful_run_reports_positive_peak():
+def test_successful_run_reports_both_statistics():
     def allocates():
         torch.zeros(1024, 1024, device="cuda")
 
     result = measure_peak_memory(allocates)
     assert result.status == "ok"
-    assert result.peak_bytes > 0
+    assert result.peak_allocated_bytes > 0
+    assert result.peak_reserved_bytes >= result.peak_allocated_bytes
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -537,35 +574,58 @@ import torch
 
 @dataclass(frozen=True)
 class MemoryResult:
-    peak_bytes: int | None
+    peak_allocated_bytes: int | None
+    peak_reserved_bytes: int | None
     status: str
+
+
+def _is_oom(exc: BaseException) -> bool:
+    """CUDA OOM이 오는 두 가지 형태를 모두 인정한다.
+
+    `torch.cuda.OutOfMemoryError`가 표준 경로지만, cuDNN workspace 할당 실패
+    등에서는 메시지에 'out of memory'가 든 평범한 RuntimeError로 샌다. 후자를
+    놓치면 sweep이 고해상도 셀에서 죽고, 하필 그 셀이 논문의 메모리 주장이
+    걸린 자리다. 반대로 RuntimeError를 전부 삼키면 진짜 버그가 가짜 메모리
+    한계로 결과표에 실리므로, 메시지를 확인해 구분한다.
+    """
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
 
 
 def measure_peak_memory(fn: Callable[[], object]) -> MemoryResult:
     if not torch.cuda.is_available():
         try:
             fn()
-        except torch.cuda.OutOfMemoryError:
-            return MemoryResult(peak_bytes=None, status="oom")
-        return MemoryResult(peak_bytes=None, status="no_cuda")
+        except RuntimeError as exc:
+            if not _is_oom(exc):
+                raise
+            return MemoryResult(None, None, "oom")
+        return MemoryResult(None, None, "no_cuda")
 
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
     try:
         fn()
-    except torch.cuda.OutOfMemoryError:
+    except RuntimeError as exc:
+        if not _is_oom(exc):
+            raise
         torch.cuda.empty_cache()
-        return MemoryResult(peak_bytes=None, status="oom")
+        return MemoryResult(None, None, "oom")
 
     torch.cuda.synchronize()
-    return MemoryResult(peak_bytes=torch.cuda.max_memory_allocated(), status="ok")
+    return MemoryResult(
+        peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+        peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+        status="ok",
+    )
 ```
 
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_memory.py -v`
-Expected: PASS 3건 (CUDA 없으면 1건 skip)
+Expected: PASS 6건 (CUDA 없으면 마지막 1건 skip)
 
 - [ ] **Step 5: 커밋**
 
@@ -689,11 +749,13 @@ git commit -m "feat: put the three compared models behind one builder"
 - Consumes: `models.registry.build_model`
 - Produces: `build_model("cmt_s", ...)`가 동작. `models.cmt.load_cmt_small(pretrained, img_size) -> nn.Module`
 
+**가중치 로딩은 이 계획의 범위가 아니다.** E1은 FLOPs·latency·메모리만 재고 셋 다 가중치와 무관하다. 사전학습 체크포인트가 실제로 필요한 것은 ERF를 재는 E2와 dilution을 재는 E3이므로, 로딩과 상대 위치 bias 보간은 그 계획에서 구현한다. 여기서 미리 쓰면 어떤 테스트도 거치지 않는 추측성 코드가 된다. `pretrained=True`는 무엇을 해야 하는지 알려주는 `NotImplementedError`를 던진다.
+
 - [ ] **Step 1: 공식 구현 벤더링**
 
-`huawei-noah/Efficient-AI-Backbones`의 `cmt_pytorch/cmt.py`를 `models/cmt_official.py`로 복사한다. 라이선스 헤더를 지우지 않는다. 출처와 커밋 해시를 파일 상단 주석에 남긴다.
+`huawei-noah/Efficient-AI-Backbones`의 `cmt_pytorch/cmt.py`를 `models/cmt_official.py`로 복사한다. 라이선스 헤더(파일 상단 Huawei 저작권 주석)를 지우지 않는다. 출처 URL과 받은 날짜를 파일 상단에 덧붙인다.
 
-체크포인트는 저장소 Releases에서 CMT-Small을 받아 `checkpoints/cmt_small.pth`에 둔다. `.gitignore`가 이미 `checkpoints/`를 제외한다.
+체크포인트는 받지 않는다 — E1에 필요 없다.
 
 - [ ] **Step 2: 실패하는 테스트 작성**
 
@@ -719,11 +781,35 @@ def test_cmt_s_runs_at_224():
 
 
 def test_cmt_s_runs_at_384():
-    """상대 위치 bias가 해상도 변경 시 보간되어야 한다."""
+    """해상도 sweep의 전제. 384²가 안 되면 E1이 성립하지 않는다."""
     model = build_model("cmt_s", pretrained=False, img_size=384).eval()
     with torch.no_grad():
         out = model(torch.zeros(1, 3, 384, 384))
     assert out.shape == (1, 1000)
+
+
+def test_cmt_s_at_384_actually_rebuilds_the_stage_grids():
+    """출력 shape만 보면 img_size를 통째로 무시해도 통과한다 — 클래스 수는
+    해상도와 무관하기 때문이다. stage별 격자가 실제로 커졌는지 직접 확인한다."""
+    small = build_model("cmt_s", pretrained=False, img_size=224)
+    large = build_model("cmt_s", pretrained=False, img_size=384)
+
+    def first_stage_patches(model):
+        for module in model.modules():
+            if hasattr(module, "num_patches"):
+                return module.num_patches
+        raise AssertionError("num_patches를 가진 모듈이 없다 — 구조 가정이 틀렸다")
+
+    assert first_stage_patches(large) > first_stage_patches(small)
+
+
+def test_pretrained_weights_are_not_silently_skipped():
+    """가중치 로딩은 E2/E3 계획으로 미뤘다. 조용히 무시하면 나중에 무작위 초기화
+    모델로 ERF를 재고도 아무도 모른다."""
+    import pytest
+
+    with pytest.raises(NotImplementedError, match="E2"):
+        build_model("cmt_s", pretrained=True)
 ```
 
 - [ ] **Step 3: 테스트 실행 — 실패 확인**
@@ -737,47 +823,22 @@ Expected: FAIL — `NotImplementedError: 'cmt_s'은 이후 태스크에서 붙�
 # models/cmt.py
 """CMT-S 로더.
 
-공식 구현(models/cmt_official.py)을 감싸, 해상도를 바꿀 때 학습된 상대 위치
-bias를 bicubic으로 보간한다. CMT 논문이 명시한 fine-tuning 절차와 같다.
+E1은 FLOPs·latency·메모리만 재고 셋 다 가중치와 무관하므로, 여기서는 구조만
+세운다. 사전학습 가중치 로딩과 상대 위치 bias 보간은 그것이 실제로 필요한
+E2(ERF)·E3(dilution) 계획에서 구현한다.
 """
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.cmt_official import cmt_s as _cmt_s_official
 
-CHECKPOINT_PATH = "checkpoints/cmt_small.pth"
 
-
-def load_cmt_small(pretrained: bool = True, img_size: int = 224) -> nn.Module:
-    model = _cmt_s_official(img_size=img_size)
-    if not pretrained:
-        return model
-
-    state = torch.load(CHECKPOINT_PATH, map_location="cpu")
-    state = state.get("model", state)
-    state = _interpolate_relative_bias(state, model)
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        raise RuntimeError(f"체크포인트에 없는 키: {missing[:5]}")
-    return model
-
-
-def _interpolate_relative_bias(state: dict, model: nn.Module) -> dict:
-    """해상도가 바뀌면 상대 위치 bias의 격자 크기도 바뀐다."""
-    target = model.state_dict()
-    for key, value in list(state.items()):
-        if "relative_pos" not in key and "attn.B" not in key:
-            continue
-        if key not in target or value.shape == target[key].shape:
-            continue
-        state[key] = F.interpolate(
-            value.unsqueeze(0).unsqueeze(0).float(),
-            size=target[key].shape[-2:],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze(0).squeeze(0)
-    return state
+def load_cmt_small(pretrained: bool = False, img_size: int = 224) -> nn.Module:
+    if pretrained:
+        raise NotImplementedError(
+            "CMT-S 가중치 로딩은 아직 없다. E1은 구조 비용만 재므로 필요하지 않고, "
+            "로딩과 상대 위치 bias 보간은 E2/E3 계획에서 구현한다."
+        )
+    return _cmt_s_official(img_size=img_size)
 ```
 
 `models/registry.py`의 `build_model`에서 분기를 추가한다:
@@ -792,15 +853,17 @@ def _interpolate_relative_bias(state: dict, model: nn.Module) -> dict:
 - [ ] **Step 5: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_cmt.py -v`
-Expected: PASS 3건
+Expected: PASS 5건
 
-벤더링한 `cmt_official.py`가 `img_size` 인자를 받지 않으면 시그니처를 확인해 맞춘다. 공식 구현마다 인자명이 다를 수 있다.
+공식 소스는 확인해두었다. `cmt_s(pretrained=False, **kwargs)`가 존재하고 `CMT.__init__`이 `img_size`를 받으므로 위 호출이 그대로 동작한다. `embed_dims=[64,128,256,512]`, `depths=[3,3,16,3]`으로 논문 표 2의 CMT-S와 일치한다.
+
+import는 `timm.models.helpers` 등 timm 0.x 경로를 쓰지만 timm 1.0.28에서 deprecation shim으로 모두 동작한다(FutureWarning만 발생). **벤더링한 파일의 import를 손대지 않는다** — 고정 환경의 timm 0.9.12에서 원본 그대로 돌아가야 하고, 여기서 1.x 경로로 고쳐두면 그쪽이 깨진다.
 
 - [ ] **Step 6: 커밋**
 
 ```bash
 git add models/cmt.py models/cmt_official.py models/registry.py tests/test_cmt.py
-git commit -m "feat: load CMT-S and interpolate its position bias across resolutions"
+git commit -m "feat: build CMT-S at any sweep resolution"
 ```
 
 ---
@@ -988,11 +1051,15 @@ git commit -m "feat: load Vim-S and stop fvcore from counting selective scan as 
 - Test: `tests/test_throughput.py`
 
 **Interfaces:**
-- Consumes: `bench.memory.measure_peak_memory`
+- Consumes: `bench.memory.is_oom`
 - Produces:
   - `bench.throughput.find_max_batch(model, input_shape, device="cuda", limit=512) -> int` — 들어가는 최대 배치. 1도 안 들어가면 `0`
   - `bench.throughput.measure_throughput(model, input_shape, device="cuda", limit=512) -> ThroughputResult`
   - `ThroughputResult`는 `batch: int`, `images_per_sec: float | None` 필드를 가진 dataclass
+
+- [ ] **Step 0: `_is_oom`을 공개 이름으로 승격**
+
+`bench/memory.py`의 `_is_oom`을 `is_oom`으로 이름만 바꾼다(호출부도 함께). 배치 탐색은 일부러 OOM을 유발하는 코드라 같은 판정이 필요한데, 두 모듈이 각자 다른 기준을 쓰면 메모리 측정에서는 OOM으로 기록되는 상황이 배치 탐색에서는 예외로 터진다. `tests/test_memory.py`는 `measure_peak_memory`를 통해서만 검증하므로 이 이름 변경에 영향받지 않는다. 변경 후 `pytest tests/test_memory.py -v`가 여전히 6건 통과하는지 확인한다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1045,6 +1112,40 @@ def test_throughput_is_none_when_nothing_fits():
     result = measure_throughput(FitsUpTo(0), input_shape=(4,), device="cpu")
     assert result.batch == 0
     assert result.images_per_sec is None
+
+
+class RaisesOomWordedRuntimeError(nn.Module):
+    """OOM이 평범한 RuntimeError로 새는 형태. bench.memory와 판정이 일치해야 한다."""
+
+    def __init__(self, threshold: int):
+        super().__init__()
+        self.threshold = threshold
+        self.fc = nn.Linear(4, 4)
+
+    def forward(self, x):
+        if x.shape[0] > self.threshold:
+            raise RuntimeError("CUDA error: out of memory allocating workspace")
+        return self.fc(x)
+
+
+def test_batch_search_treats_oom_worded_runtime_error_as_not_fitting():
+    """배치 탐색은 일부러 OOM을 유발한다. 여기서 판정이 좁으면 탐색이 죽는다."""
+    assert find_max_batch(
+        RaisesOomWordedRuntimeError(6), input_shape=(4,), device="cpu"
+    ) == 6
+
+
+class HasABug(nn.Module):
+    def forward(self, x):
+        raise RuntimeError("shape '[2, 3]' is invalid for input of size 7")
+
+
+def test_batch_search_does_not_swallow_unrelated_runtime_errors():
+    """진짜 버그를 '안 들어감'으로 처리하면 max_batch가 조용히 0이 된다."""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="invalid for input"):
+        find_max_batch(HasABug(), input_shape=(4,), device="cpu")
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1068,6 +1169,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
+from bench.memory import is_oom
+
 
 @dataclass(frozen=True)
 class ThroughputResult:
@@ -1076,10 +1179,14 @@ class ThroughputResult:
 
 
 def _fits(model: nn.Module, input_shape: tuple[int, ...], batch: int, device: str) -> bool:
+    """`bench.memory`와 같은 OOM 판정을 쓴다. 두 모듈이 기준을 달리하면,
+    메모리 측정에서는 oom으로 기록되는 상황이 배치 탐색에서는 예외로 터진다."""
     try:
         with torch.no_grad():
             model(torch.zeros(batch, *input_shape, device=device))
-    except torch.cuda.OutOfMemoryError:
+    except RuntimeError as exc:
+        if not is_oom(exc):
+            raise
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
         return False
@@ -1150,8 +1257,8 @@ def measure_throughput(
 
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
-Run: `pytest tests/test_throughput.py -v`
-Expected: PASS 6건
+Run: `pytest tests/test_throughput.py tests/test_memory.py -v`
+Expected: PASS 14건 (throughput 8건 + memory 6건). memory 쪽은 Step 0의 이름 변경이 기존 동작을 깨지 않았음을 확인하는 것이다.
 
 - [ ] **Step 5: 커밋**
 
@@ -1173,8 +1280,15 @@ git commit -m "feat: find the largest batch 8GB holds and time it"
 - Consumes: `bench.env.snapshot`, `bench.flops.count_flops`, `bench.latency.measure_latency`, `bench.memory.measure_peak_memory`, `bench.throughput.measure_throughput`, `models.registry.build_model`
 - Produces:
   - `experiments.e1_resolution_sweep.RESOLUTIONS: tuple[int, ...]` — `(224, 384, 512, 768, 1024)`
+  - `experiments.e1_resolution_sweep.COLUMNS: list[str]`
   - `experiments.e1_resolution_sweep.run_sweep(model_names, resolutions, out_dir) -> pandas.DataFrame`
-  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_bytes, max_batch, images_per_sec, status`
+  - CSV 열: `model, resolution, params, flops_traced, flops_uncounted_ops, latency_ms, peak_allocated_bytes, peak_reserved_bytes, max_batch, images_per_sec, status, error`
+
+실행이 15셀 한 시간 규모라는 점이 이 태스크의 설계를 좌우한다. 두 가지가 따라온다.
+
+**셀마다 CSV를 다시 쓴다.** 마지막에 한 번만 쓰면 14번째 셀에서 예외가 났을 때 앞의 13셀이 통째로 사라진다. 실패한 셀은 `status="error"`와 `error` 메시지를 담은 행으로 남겨, 무엇이 빠졌는지 나중에 알 수 있게 한다. 실패를 예외로 터뜨려 실행을 끝내지 않는다 — 그 대가가 GPU 한 시간이다.
+
+**FLOPs를 가장 먼저 잰다.** `count_flops`는 CPU 트레이스라 OOM이 날 수 없다. 메모리에 안 들어가는 해상도에서도 연산량은 논문 표에 필요한 값이므로, OOM 때문에 FLOPs까지 잃으면 안 된다. 순서를 FLOPs(CPU) → latency+메모리(GPU) → throughput(GPU)로 두면 장치 왕복도 한 번으로 줄어든다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1182,7 +1296,9 @@ git commit -m "feat: find the largest batch 8GB holds and time it"
 # tests/test_e1.py
 import pandas as pd
 
-from experiments.e1_resolution_sweep import RESOLUTIONS, run_sweep
+import experiments.e1_resolution_sweep as e1
+from bench.memory import MemoryResult
+from experiments.e1_resolution_sweep import COLUMNS, RESOLUTIONS, run_sweep
 
 EXPECTED_COLUMNS = [
     "model",
@@ -1191,42 +1307,113 @@ EXPECTED_COLUMNS = [
     "flops_traced",
     "flops_uncounted_ops",
     "latency_ms",
-    "peak_bytes",
+    "peak_allocated_bytes",
+    "peak_reserved_bytes",
     "max_batch",
     "images_per_sec",
     "status",
+    "error",
 ]
+
+
+def _stub_row(model_name: str, resolution: int) -> dict:
+    row = {column: None for column in COLUMNS}
+    row.update(
+        model=model_name,
+        resolution=resolution,
+        flops_uncounted_ops="",
+        status="ok",
+    )
+    return row
 
 
 def test_sweeps_the_five_resolutions_from_the_spec():
     assert RESOLUTIONS == (224, 384, 512, 768, 1024)
 
 
-def test_writes_one_row_per_model_resolution_pair(tmp_path):
+def test_writes_one_row_per_model_resolution_pair(tmp_path, monkeypatch):
+    monkeypatch.setattr(e1, "_measure_one", _stub_row)
+
     df = run_sweep(
-        model_names=("deit_s",), resolutions=(224, 384), out_dir=tmp_path
+        model_names=("deit_s", "cmt_s"), resolutions=(224, 384), out_dir=tmp_path
     )
-    assert len(df) == 2
+
+    assert len(df) == 4
     assert list(df.columns) == EXPECTED_COLUMNS
 
 
-def test_persists_a_csv_and_an_env_snapshot(tmp_path):
+def test_persists_a_csv_and_an_env_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(e1, "_measure_one", _stub_row)
+
     run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
     assert (tmp_path / "sweep.csv").exists()
     assert (tmp_path / "env.json").exists()
 
 
+def test_a_failing_cell_does_not_lose_the_cells_already_measured(tmp_path, monkeypatch):
+    """15셀 한 시간짜리 실행이 중간에 죽어도 앞의 결과는 남아야 한다.
+    이 방어가 없으면 GPU 한 시간이 예외 하나로 사라진다."""
+    calls = {"n": 0}
+
+    def flaky(model_name, resolution):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("이 셀만 터진다")
+        return _stub_row(model_name, resolution)
+
+    monkeypatch.setattr(e1, "_measure_one", flaky)
+
+    df = run_sweep(
+        model_names=("deit_s",), resolutions=(224, 384, 512), out_dir=tmp_path
+    )
+
+    assert len(df) == 3
+    assert list(df["status"]) == ["ok", "error", "ok"]
+    assert "이 셀만 터진다" in df.iloc[1]["error"]
+
+    on_disk = pd.read_csv(tmp_path / "sweep.csv")
+    assert len(on_disk) == 3
+
+
+def test_csv_exists_before_the_sweep_finishes(tmp_path, monkeypatch):
+    """마지막에 한 번만 쓰면 중간 실패 시 파일 자체가 없다."""
+    seen = []
+
+    def record_then_stub(model_name, resolution):
+        seen.append((tmp_path / "sweep.csv").exists())
+        return _stub_row(model_name, resolution)
+
+    monkeypatch.setattr(e1, "_measure_one", record_then_stub)
+    run_sweep(model_names=("deit_s",), resolutions=(224, 384), out_dir=tmp_path)
+
+    assert seen[1] is True, "두 번째 셀을 재기 전에 첫 셀이 이미 디스크에 있어야 한다"
+
+
 def test_oom_rows_are_kept_with_status_not_dropped(tmp_path, monkeypatch):
     """OOM은 결과다. 행이 사라지면 메모리 주장의 증거가 사라진다."""
-    import experiments.e1_resolution_sweep as e1
-    from bench.memory import MemoryResult
-
     monkeypatch.setattr(
-        e1, "measure_peak_memory", lambda fn: MemoryResult(None, "oom")
+        e1, "measure_peak_memory", lambda fn: MemoryResult(None, None, "oom")
     )
+
     df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
     assert len(df) == 1
     assert df.iloc[0]["status"] == "oom"
+
+
+def test_flops_survive_an_oom_row(tmp_path, monkeypatch):
+    """FLOPs는 CPU 트레이스라 OOM과 무관하다. 메모리에 안 들어가는 해상도에서도
+    연산량은 논문 표에 들어갈 값이므로 함께 잃으면 안 된다."""
+    monkeypatch.setattr(
+        e1, "measure_peak_memory", lambda fn: MemoryResult(None, None, "oom")
+    )
+
+    df = run_sweep(model_names=("deit_s",), resolutions=(224,), out_dir=tmp_path)
+
+    assert df.iloc[0]["status"] == "oom"
+    assert df.iloc[0]["flops_traced"] > 0
+    assert df.iloc[0]["params"] > 0
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1265,10 +1452,12 @@ COLUMNS = [
     "flops_traced",
     "flops_uncounted_ops",
     "latency_ms",
-    "peak_bytes",
+    "peak_allocated_bytes",
+    "peak_reserved_bytes",
     "max_batch",
     "images_per_sec",
     "status",
+    "error",
 ]
 
 
@@ -1280,23 +1469,27 @@ def _op_handlers(model_name: str) -> dict:
     return {}
 
 
+def _blank_row(model_name: str, resolution: int) -> dict:
+    row = {column: None for column in COLUMNS}
+    row.update(model=model_name, resolution=resolution, flops_uncounted_ops="")
+    return row
+
+
 def _measure_one(model_name: str, resolution: int) -> dict:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = build_model(model_name, pretrained=False, img_size=resolution)
     shape = (3, resolution, resolution)
 
-    row = {
-        "model": model_name,
-        "resolution": resolution,
-        "params": sum(p.numel() for p in model.parameters()),
-        "flops_traced": None,
-        "flops_uncounted_ops": "",
-        "latency_ms": None,
-        "peak_bytes": None,
-        "max_batch": None,
-        "images_per_sec": None,
-        "status": "ok",
-    }
+    row = _blank_row(model_name, resolution)
+    row["status"] = "ok"
+
+    model = build_model(model_name, pretrained=False, img_size=resolution)
+    row["params"] = sum(p.numel() for p in model.parameters())
+
+    # FLOPs를 먼저 잰다. CPU 트레이스라 OOM이 날 수 없으므로, 메모리에 들어가지
+    # 않는 셀에서도 연산량은 남는다.
+    flops = count_flops(model, shape, op_handlers=_op_handlers(model_name))
+    row["flops_traced"] = flops.traced
+    row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
 
     # latency 측정을 peak memory 측정 안에서 한 번만 돌린다. 밖에서 또 부르면
     # 1024²에서 150 iteration을 두 번 돌게 된다.
@@ -1306,20 +1499,24 @@ def _measure_one(model_name: str, resolution: int) -> dict:
         captured["latency_ms"] = measure_latency(model, shape, device=device)
 
     memory = measure_peak_memory(_timed_run)
-    row["peak_bytes"] = memory.peak_bytes
+    row["peak_allocated_bytes"] = memory.peak_allocated_bytes
+    row["peak_reserved_bytes"] = memory.peak_reserved_bytes
     row["status"] = memory.status
     row["latency_ms"] = captured.get("latency_ms")
 
     if memory.status == "oom":
         return row
 
-    flops = count_flops(model, shape, op_handlers=_op_handlers(model_name))
-    row["flops_traced"] = flops.traced
-    row["flops_uncounted_ops"] = ";".join(flops.uncounted_ops)
-
     throughput = measure_throughput(model, shape, device=device)
     row["max_batch"] = throughput.batch
     row["images_per_sec"] = throughput.images_per_sec
+    return row
+
+
+def _error_row(model_name: str, resolution: int, exc: BaseException) -> dict:
+    row = _blank_row(model_name, resolution)
+    row["status"] = "error"
+    row["error"] = f"{type(exc).__name__}: {exc}"
     return row
 
 
@@ -1330,14 +1527,26 @@ def run_sweep(
 ) -> pd.DataFrame:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "sweep.csv"
+    (out_dir / "env.json").write_text(json.dumps(snapshot(), indent=2))
 
-    rows = [
-        _measure_one(name, res) for name in model_names for res in resolutions
-    ]
+    rows: list[dict] = []
+    for name in model_names:
+        for resolution in resolutions:
+            try:
+                rows.append(_measure_one(name, resolution))
+            except Exception as exc:  # 한 셀의 실패로 전체를 잃지 않는다
+                rows.append(_error_row(name, resolution, exc))
+            # 셀마다 다시 쓴다. 한 시간짜리 실행이 도중에 죽어도 앞의 결과는 남는다.
+            pd.DataFrame(rows, columns=COLUMNS).to_csv(csv_path, index=False)
+
     df = pd.DataFrame(rows, columns=COLUMNS)
 
-    df.to_csv(out_dir / "sweep.csv", index=False)
-    (out_dir / "env.json").write_text(json.dumps(snapshot(), indent=2))
+    failed = df[df["status"] == "error"]
+    if not failed.empty:
+        cells = ", ".join(f"{r.model}@{r.resolution}" for r in failed.itertuples())
+        print(f"경고: {len(failed)}개 셀 실패 — {cells}. 숫자를 쓰기 전에 확인할 것.")
+
     return df
 
 
@@ -1348,13 +1557,13 @@ if __name__ == "__main__":
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_e1.py -v`
-Expected: PASS 4건
+Expected: PASS 7건
 
 - [ ] **Step 5: 커밋**
 
 ```bash
 git add experiments/ tests/test_e1.py
-git commit -m "feat: sweep the three models across five resolutions into one CSV"
+git commit -m "feat: sweep the models into a CSV that survives a failed cell"
 ```
 
 ---
@@ -1435,7 +1644,14 @@ git commit -m "test: check the harness against published FLOPs before trusting i
 
 **Interfaces:**
 - Consumes: `results/e1/sweep.csv`
-- Produces: `figures.e1_plot.plot_sweep(csv_path, out_path) -> Path` — 3단 그림(FLOPs / latency / peak VRAM 대 해상도) PNG
+- Produces:
+  - `figures.e1_plot.plot_sweep(csv_path, out_path) -> Path` — 4패널 PNG (FLOPs / latency / peak VRAM allocated / peak VRAM reserved 대 해상도)
+  - `figures.e1_plot.plotted_series(df, column) -> dict[str, list[tuple[int, float]]]` — 모델별로 실제로 선에 올라갈 (해상도, 값)
+  - `figures.e1_plot.missing_cells(df) -> list[tuple[int, str, str]]` — 측정되지 않은 셀 (해상도, 모델, 상태)
+
+**무엇을 그릴지 정하는 판단을 순수 함수로 뺀다.** 그래야 "OOM이 0으로 그려지는가"를 matplotlib 내부를 뒤지지 않고 직접 검증할 수 있다. 파일이 생겼는지만 보는 테스트는 그 회귀를 못 잡는다 — OOM을 0으로 그려도 PNG는 멀쩡히 만들어지기 때문이다.
+
+CSV의 `status`는 `"ok"`, `"oom"`, `"no_cuda"`, `"error"` 네 가지이며 **넷 다 그림에 드러낸다.** `"ok"`만 그리고 나머지를 빠뜨리면 측정에 실패한 셀과 아직 재지 않은 셀이 구분되지 않는다. 출처를 댈 수 없는 수치가 문제였던 논문에 "왜 비었는지 알 수 없는 빈칸"을 넣는 셈이다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1444,31 +1660,104 @@ git commit -m "test: check the harness against published FLOPs before trusting i
 import pandas as pd
 import pytest
 
-from figures.e1_plot import plot_sweep
+from figures.e1_plot import missing_cells, plot_sweep, plotted_series
+
+BASE_ROW = {
+    "model": "deit_s",
+    "resolution": 224,
+    "params": 22_000_000,
+    "flops_traced": 4.6e9,
+    "flops_uncounted_ops": "",
+    "latency_ms": 5.0,
+    "peak_allocated_bytes": 1_000_000,
+    "peak_reserved_bytes": 2_000_000,
+    "max_batch": 32,
+    "images_per_sec": 100.0,
+    "status": "ok",
+    "error": None,
+}
+
+UNMEASURED = {
+    "latency_ms": None,
+    "peak_allocated_bytes": None,
+    "peak_reserved_bytes": None,
+    "max_batch": None,
+    "images_per_sec": None,
+}
+
+
+def _row(**overrides):
+    row = dict(BASE_ROW)
+    row.update(overrides)
+    return row
+
+
+def _frame(rows):
+    return pd.DataFrame(rows)
 
 
 def _write_csv(path, rows):
-    pd.DataFrame(rows).to_csv(path, index=False)
+    _frame(rows).to_csv(path, index=False)
     return path
 
 
-def test_writes_a_png_from_the_csv(tmp_path):
-    csv = _write_csv(
-        tmp_path / "sweep.csv",
+def test_oom_cells_are_absent_from_the_series_not_zero():
+    """OOM을 0으로 그리면 '메모리를 안 썼다'로 읽혀 논문 주장이 뒤집힌다."""
+    df = _frame(
         [
-            {
-                "model": "deit_s",
-                "resolution": 224,
-                "params": 22_000_000,
-                "flops_traced": 4.6e9,
-                "flops_uncounted_ops": "",
-                "latency_ms": 5.0,
-                "peak_bytes": 1_000_000,
-                "status": "ok",
-            }
-        ],
+            _row(resolution=224),
+            _row(resolution=1024, status="oom", **UNMEASURED),
+        ]
     )
+
+    series = plotted_series(df, "peak_allocated_bytes")
+
+    assert series["deit_s"] == [(224, 1_000_000)]
+    assert all(resolution != 1024 for resolution, _ in series["deit_s"])
+
+
+def test_error_and_no_cuda_cells_are_also_absent_from_the_series():
+    df = _frame(
+        [
+            _row(resolution=512, status="error", error="RuntimeError: boom"),
+            _row(resolution=768, status="no_cuda", **UNMEASURED),
+        ]
+    )
+
+    assert plotted_series(df, "latency_ms") == {}
+
+
+def test_a_row_missing_only_one_column_does_not_poison_the_others():
+    """FLOPs는 OOM 셀에도 남는다. latency가 없다고 FLOPs까지 버리면 안 된다."""
+    df = _frame([_row(resolution=1024, status="oom", flops_traced=90e9, **UNMEASURED)])
+
+    assert plotted_series(df, "flops_traced") == {}
+    assert missing_cells(df) == [(1024, "deit_s", "oom")]
+
+
+def test_missing_cells_reports_every_unmeasured_status():
+    """실패한 측정과 아직 재지 않은 셀이 그림에서 같아 보이면 안 된다."""
+    df = _frame(
+        [
+            _row(resolution=224),
+            _row(resolution=512, status="error", error="RuntimeError: boom"),
+            _row(resolution=768, status="no_cuda", **UNMEASURED),
+            _row(resolution=1024, status="oom", **UNMEASURED),
+        ]
+    )
+
+    assert missing_cells(df) == [
+        (512, "deit_s", "error"),
+        (768, "deit_s", "no_cuda"),
+        (1024, "deit_s", "oom"),
+    ]
+
+
+def test_writes_a_png_from_the_csv(tmp_path):
+    csv = _write_csv(tmp_path / "sweep.csv", [_row()])
+
     out = plot_sweep(csv, tmp_path / "e1.png")
+
     assert out.exists()
     assert out.stat().st_size > 0
 
@@ -1476,29 +1765,23 @@ def test_writes_a_png_from_the_csv(tmp_path):
 def test_refuses_an_empty_csv(tmp_path):
     """빈 입력에서 조용히 빈 그림을 내면 논문에 빈 그림이 실린다."""
     csv = _write_csv(tmp_path / "sweep.csv", [])
+
     with pytest.raises(ValueError, match="비어"):
         plot_sweep(csv, tmp_path / "e1.png")
 
 
-def test_oom_rows_do_not_become_zero_points(tmp_path):
-    """OOM을 0으로 그리면 '메모리를 안 쓴다'로 읽힌다."""
+def test_renders_when_nothing_succeeded(tmp_path):
+    """전 해상도가 OOM인 모델도 그림이 나와야 한다. 성공 행이 하나도 없는
+    패널에서 축 범위 계산과 범례가 깨지기 쉽다."""
     csv = _write_csv(
         tmp_path / "sweep.csv",
-        [
-            {
-                "model": "deit_s",
-                "resolution": 1024,
-                "params": 22_000_000,
-                "flops_traced": None,
-                "flops_uncounted_ops": "",
-                "latency_ms": None,
-                "peak_bytes": None,
-                "status": "oom",
-            }
-        ],
+        [_row(resolution=1024, status="oom", **UNMEASURED)],
     )
+
     out = plot_sweep(csv, tmp_path / "e1.png")
+
     assert out.exists()
+    assert out.stat().st_size > 0
 ```
 
 - [ ] **Step 2: 테스트 실행 — 실패 확인**
@@ -1510,7 +1793,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'figures.e1_plot'`
 
 ```python
 # figures/e1_plot.py
-"""E1 그림. CSV만 읽는다 — 손으로 넣은 숫자가 그림에 들어가지 않게."""
+"""E1 그림. CSV만 읽는다 — 손으로 넣은 숫자가 그림에 들어가지 않게.
+
+무엇을 그릴지 정하는 판단은 `plotted_series`와 `missing_cells`에 있다. 둘 다
+순수 함수라 matplotlib을 거치지 않고 직접 검증할 수 있다.
+"""
 from pathlib import Path
 
 import matplotlib
@@ -1522,8 +1809,41 @@ import pandas as pd
 PANELS = [
     ("flops_traced", "FLOPs", 1e9, "GFLOPs"),
     ("latency_ms", "Latency", 1.0, "ms"),
-    ("peak_bytes", "Peak VRAM", 1024**3, "GiB"),
+    ("peak_allocated_bytes", "Peak VRAM (allocated)", 1024**3, "GiB"),
+    ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB"),
 ]
+
+# 측정되지 않은 셀은 색과 문구로 이유를 말한다. 0으로 그리지 않는다.
+MISSING_STATUSES = {
+    "oom": ("tab:red", "OOM"),
+    "error": ("tab:orange", "ERROR"),
+    "no_cuda": ("tab:gray", "no CUDA"),
+}
+
+
+def plotted_series(df: pd.DataFrame, column: str) -> dict[str, list[tuple[int, float]]]:
+    """모델별로 선에 올릴 (해상도, 값). status가 "ok"이고 값이 있는 셀만."""
+    series: dict[str, list[tuple[int, float]]] = {}
+
+    for model, group in df.groupby("model"):
+        usable = group[(group["status"] == "ok") & group[column].notna()]
+        points = [
+            (int(row.resolution), row[column])
+            for row in usable.sort_values("resolution").itertuples()
+        ]
+        if points:
+            series[str(model)] = points
+
+    return series
+
+
+def missing_cells(df: pd.DataFrame) -> list[tuple[int, str, str]]:
+    """측정되지 않은 셀 (해상도, 모델, 상태). 해상도 오름차순."""
+    unmeasured = df[df["status"].isin(MISSING_STATUSES)]
+    return [
+        (int(row.resolution), str(row.model), str(row.status))
+        for row in unmeasured.sort_values(["resolution", "model"]).itertuples()
+    ]
 
 
 def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
@@ -1532,35 +1852,66 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
         raise ValueError(f"{csv_path}가 비어 있다 — 먼저 sweep을 실행할 것")
 
     out_path = Path(out_path)
-    fig, axes = plt.subplots(1, len(PANELS), figsize=(15, 4))
+    fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
+    unmeasured = missing_cells(df)
 
     for ax, (column, title, scale, unit) in zip(axes, PANELS):
-        for model, group in df.groupby("model"):
-            ok = group[group["status"] == "ok"].sort_values("resolution")
-            if not ok.empty:
-                ax.plot(
-                    ok["resolution"], ok[column] / scale, marker="o", label=model
-                )
-            # OOM은 0이 아니라 표식으로 남긴다.
-            for _, row in group[group["status"] == "oom"].iterrows():
-                ax.axvline(row["resolution"], linestyle=":", alpha=0.4)
-                ax.annotate(
-                    f"{row['model']} OOM",
-                    xy=(row["resolution"], ax.get_ylim()[1] * 0.5),
-                    rotation=90,
-                    fontsize=7,
-                    ha="right",
-                )
+        series = plotted_series(df, column)
+
+        for model, points in series.items():
+            ax.plot(
+                [resolution for resolution, _ in points],
+                [value / scale for _, value in points],
+                marker="o",
+                label=model,
+            )
+
+        _mark_unmeasured(ax, unmeasured)
+
         ax.set_xlabel("input resolution (px)")
         ax.set_ylabel(unit)
         ax.set_title(title)
-        ax.set_yscale("log")
-        ax.legend()
+
+        if series:
+            ax.set_yscale("log")
+            ax.legend()
+        else:
+            # 범례를 부르면 "No artists with labels" 경고가 난다.
+            ax.text(
+                0.5, 0.5, "no values measured",
+                transform=ax.transAxes, ha="center", va="center",
+            )
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     return out_path
+
+
+def _mark_unmeasured(ax, unmeasured: list[tuple[int, str, str]]) -> None:
+    """같은 해상도에서 여러 모델이 실패해도 라벨이 겹치지 않게 쌓아 올린다.
+
+    y 위치를 axes fraction으로 잡아, 성공한 행이 하나도 없어 축 범위가
+    기본값인 패널에서도 라벨이 화면 안에 남는다.
+    """
+    seen_at: dict[int, int] = {}
+
+    for resolution, model, status in unmeasured:
+        color, label = MISSING_STATUSES[status]
+        offset = seen_at.get(resolution, 0)
+        seen_at[resolution] = offset + 1
+
+        ax.axvline(resolution, color=color, linestyle=":", alpha=0.6)
+        ax.annotate(
+            f"{model} {label}",
+            xy=(resolution, 0.95 - 0.09 * offset),
+            xycoords=("data", "axes fraction"),
+            rotation=90,
+            fontsize=7,
+            color=color,
+            ha="right",
+            va="top",
+        )
 
 
 if __name__ == "__main__":
@@ -1570,15 +1921,72 @@ if __name__ == "__main__":
 - [ ] **Step 4: 테스트 실행 — 통과 확인**
 
 Run: `pytest tests/test_e1_plot.py -v`
-Expected: PASS 3건
+Expected: PASS 7건, 경고 없음
 
-- [ ] **Step 5: 전체 sweep 실행과 결과 커밋**
+그림 안의 문자열은 전부 영어로 둔다. matplotlib 기본 폰트(DejaVu Sans)에 한글 글리프가 없어, 한글을 넣으면 PNG에 네모 상자로 찍힌다. 논문에 실릴 그림이라 그대로 둘 수 없고, 축·패널 제목과 OOM/ERROR 라벨이 이미 영어라 일관성도 그쪽이 맞다.
+
+`UserWarning: No artists with labels found to put in legend`가 뜨면 `if series:` 분기가 제대로 걸리지 않은 것이다.
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add figures/__init__.py figures/e1_plot.py tests/test_e1_plot.py
+git commit -m "feat: plot the sweep from the CSV"
+```
+
+**실제 sweep은 여기서 돌리지 않는다.** 이 태스크가 내놓는 것은 그림을 그리는 코드이지 측정값이 아니다. 실측은 Task 13에서, 고정 환경에서 수행한다.
+
+---
+
+### Task 13: 고정 환경에서 실측 실행
+
+앞선 태스크들은 하네스를 만들었다. 이 태스크가 논문에 들어갈 숫자를 만든다.
+
+**선행 조건** (모두 충족되어야 시작한다):
+- Task 1의 스모크 테스트 통과 — WSL2에서 selective scan CUDA 커널이 실제로 돈다
+- Task 8 완료 — `build_model("vim_s")`가 동작하고 FLOPs 핸들러가 등록되어 있다
+- Task 11의 sanity check 통과 — DeiT-S 224² FLOPs가 공개값 4.6G의 ±5% 이내
+
+**Files:**
+- Create: `results/e1/sweep.csv`, `results/e1/env.json`, `results/e1/e1_sweep.png`
+
+**Interfaces:**
+- Consumes: `experiments.e1_resolution_sweep.run_sweep`, `figures.e1_plot.plot_sweep`
+- Produces: 논문 표 1을 대체할 실측 데이터
+
+- [ ] **Step 1: 고정 환경에서 전체 테스트 재확인**
+
+Run: `pytest tests/ -v`
+
+Windows(Python 3.12 / torch 2.6)에서 개발한 하네스가 고정 환경(Python 3.10.13 / torch 2.1.1+cu118)에서도 같게 동작하는지 확인한다. 결과가 다르면 실측 전에 원인을 밝힌다 — 하네스가 환경에 따라 다르게 굴면 그 하네스로 잰 숫자는 못 쓴다.
+
+- [ ] **Step 2: sweep 실행**
 
 ```bash
 python -m experiments.e1_resolution_sweep
+```
+
+3 모델 × 5 해상도 = 15셀. 배치 탐색이 매 셀에서 OOM까지 올려보므로 한 시간 규모를 예상한다. 실행 중 GPU를 다른 용도로 쓰지 않는다 — latency와 peak memory가 오염된다.
+
+- [ ] **Step 3: 결과의 정직성 확인**
+
+`results/e1/sweep.csv`를 열어 다음을 확인한다. 하나라도 어긋나면 숫자를 쓰지 않는다.
+
+- `flops_uncounted_ops` 열이 **모든 행에서 비어 있는가.** 비어 있지 않다면 그 행의 FLOPs는 과소 계상된 값이다. 특히 `vim_s` 행을 확인한다 — selective scan이 빠지면 Vim이 실제보다 훨씬 효율적으로 보인다.
+- `env.json`의 torch·CUDA·GPU가 고정 환경과 일치하는가.
+- OOM 행이 `status == "oom"`으로 남아 있는가. 사라졌다면 기록이 아니라 소실이다.
+
+- [ ] **Step 4: 그림 생성**
+
+```bash
 python -m figures.e1_plot
-git add results/e1/ figures/__init__.py figures/e1_plot.py tests/test_e1_plot.py
-git commit -m "feat: plot the sweep from the CSV and record the first measurements"
+```
+
+- [ ] **Step 5: 결과 커밋**
+
+```bash
+git add results/e1/
+git commit -m "measure: record the resolution sweep the paper's Table 1 estimated"
 ```
 
 이 시점에서 `results/e1/sweep.csv`가 논문 표 1을 대체할 실측 데이터다.

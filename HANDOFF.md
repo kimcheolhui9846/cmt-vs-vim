@@ -1,0 +1,191 @@
+# 인계 문서 — 2026-08-18
+
+다음 세션이 이 파일부터 읽으면 이어서 작업할 수 있다.
+
+## 이 저장소가 하려는 일
+
+「CMT와 Vision Mamba의 심층 비교 분석」(김철희·이강국·심규성, 2026-05-15 대한전자공학회
+제출)은 이론 분석은 갖췄지만 **직접 측정한 수치가 하나도 없다.** 표 1의 FLOPs는 손으로
+계산한 추정값이고, 표 2의 83.5% / 80.5%와 3.3절 ablation 분해는 전부 원논문 인용이다.
+Abstract는 "Experimental and theoretical analysis shows"라고 쓰지만 실제로는 theoretical만
+있다.
+
+이 저장소는 그 구멍을 실측으로 메운다. 최종 산출물은 셋이다 — 논문 v2, 포트폴리오
+프로젝트 항목, 벨로그 후속 글(1편은 그대로 두고 2편 신규).
+
+전체 설계: `docs/superpowers/specs/2026-08-18-cmt-vs-vim-experiments-design.md`
+
+## 실험 구성 (승인된 설계)
+
+| ID | 실험 | 검증 대상 | 학습 |
+|----|------|-----------|------|
+| E1 | 해상도 sweep 실측 | 표 1의 추정 FLOPs, cross-over point | 불필요 |
+| E2 | ERF 정량 측정 | 3.1절 등방성 vs scan 정합 이방성 | 불필요 |
+| E3 | Softmax dilution 정량화 | 3.2절 큰 객체 희석 주장 | 불필요 |
+| E4 | 2×2 요인 학습 ablation | 3.3절 inductive bias 주장 | 필요 |
+
+E4는 2×2 요인 설계다. 행이 연산자(Attention/SSM), 열이 구조(평면/계층 4-stage).
+D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 여기 들어온다.
+
+**요인 정의의 한계** — C칸 CMT-Ti는 DeiT-Ti와 계층 구조만 다른 게 아니라 conv locality
+(LPU, IRFFN, LMHSA)도 함께 들어온다. 따라서 "구조 주효과"는 순수 계층 효과가 아니라
+"CMT식 구조적 prior 묶음"의 효과다. 분리하려면 2×2×2 = 24 run이 필요해 예산을 넘는다.
+논문에 한계로 명시할 것. 이 정의가 D칸 구성도 강제한다 — B→D 조작이 A→C와 같아야
+상호작용을 해석할 수 있으므로, Hierarchical Vim도 계층화와 conv locality를 함께 넣는다.
+
+## 현재 상태
+
+- 브랜치: `feat/e1-resolution-sweep` (main에 머지 안 됨, 원격에 푸시됨)
+- 테스트: **97건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
+  `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
+- 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크 **전부 완료**)
+- SDD 원장: `.superpowers/sdd/2026-08-18-e1-resolution-sweep/progress.md` — git-ignored,
+  태스크별 완료·수정 라운드·이월된 minor가 전부 기록돼 있다
+
+### 완료된 태스크
+
+| Task | 산출물 | 비고 |
+|------|--------|------|
+| 1 | `tests/test_smoke.py`, `requirements.txt` | 고정 환경 구축. skip 없이 하드 실패하는 3건 |
+| 2 | `bench/env.py` | 환경 스냅샷 (GPU·드라이버·torch·CUDA·git commit) |
+| 3 | `bench/flops.py` | FLOPs + **미등록 연산 보고**, traced/analytic 분리 |
+| 4 | `bench/latency.py` | CUDA event 계측 + **반복 측정** |
+| 5 | `bench/memory.py` | peak VRAM(allocated/reserved 둘 다) + OOM을 데이터로 |
+| 6 | `models/registry.py` | `build_model` 단일 진입점, DeiT-S |
+| 7 | `models/cmt.py`, `cmt_official.py` | CMT-S (upstream 바이트 동일 벤더링) |
+| 8 | `models/vim.py`, `vim_official.py`, `rope.py` | Vim-S + fused op FLOPs 핸들러 |
+| 9 | `bench/throughput.py` | 최대 배치 이진 탐색 + 처리량 |
+| 10 | `experiments/e1_resolution_sweep.py` | sweep 오케스트레이션 |
+| 11 | `tests/test_sanity.py` | DeiT-S 공개값 4.6G 대조 (실측 4.6083G, 비율 1.002) |
+| 12 | `figures/e1_plot.py` | CSV → 5패널 그림 |
+| 13 | `results/e1/` | 고정 환경 실측 (`sweep.csv`, `env.json`, `e1_sweep.png`) |
+
+## 고정 측정 환경 (구축 완료)
+
+WSL2 Ubuntu 위에 conda 환경 `/opt/conda/envs/e1`로 만들어 뒀다. 전체 핀과 빌드
+절차는 `requirements.txt`에 있다 — causal_conv1d는 PyPI sdist에 `csrc/`가 없어
+GitHub 태그에서, mamba는 stock mamba-ssm이 아니라 Vim 포크(`mamba-1p1p1`)에서
+빌드해야 한다. 그 파일을 읽지 않고 재구축하려 들면 하루를 잃는다.
+
+Linux가 필요한 이유는 Vision Mamba의 selective scan CUDA 커널이다. 순수 PyTorch로
+대체하면 5~10배 느려져 latency 측정이 무의미해진다.
+
+```
+Python  3.10.13    torch 2.1.1+cu118    CUDA 11.8
+timm    0.9.12     mamba-1p1p1 (Vim 포크)    causal_conv1d 1.1.0
+RTX 3070 Ti (sm_86), 드라이버 591.86
+```
+
+저장소 명령을 이 환경에서 돌리는 래퍼는 스크래치패드의 `wsl/run.sh`에 있다.
+없으면 다시 만들면 된다 — `CUDA_HOME`·`PATH`·`LD_LIBRARY_PATH`를 위 env로 잡고
+`CC=gcc-11`을 걸어 저장소 루트에서 실행하는 8줄짜리다.
+
+## 다음 세션에서 반드시 알아야 할 것
+
+### 1. Windows에서 잰 수치는 논문에 못 쓴다
+
+지금까지의 개발·테스트는 Windows(Python 3.12.10 / torch 2.6.0+cu124)에서 했다.
+`bench/` 모듈은 토이 모델과 CPU만 쓰므로 버전 무관하지만, **`results/`에 커밋되는 측정값은
+반드시 고정 환경에서 나와야 한다.** 현재 `results/`에는 `.gitkeep`뿐이다 — 그 상태가 맞다.
+
+Task 13 Step 1이 고정 환경에서 `pytest tests/`를 재확인하는 관문이다. 결과가 Windows와
+다르면 실측 전에 원인을 밝힐 것.
+
+### 2. 이 프로젝트에서 가장 비싼 실패 모드
+
+**fvcore는 핸들러가 없는 연산을 조용히 0으로 센다.** Vim의 selective scan이 정확히 이
+경우이며, 놓치면 Vim의 FLOPs가 통째로 사라져 "Vim이 압도적으로 효율적"이라는 그럴듯한
+오답이 나온다. 아무것도 깨진 것처럼 보이지 않는다는 점이 위험하다.
+
+`count_flops`는 항상 `uncounted_ops`를 함께 반환하고, Task 11의 sanity check는 미등록
+연산이 하나라도 남으면 실패한다. Task 8에서 `SELECTIVE_SCAN_OP` 문자열이 실제 연산자
+이름과 다르면 핸들러가 등록되지 않고 조용히 0이 유지되므로, 브리프의 확인 절차를 반드시
+밟을 것.
+
+### 3. 진행 중 발견해 계획을 고친 것들
+
+리뷰가 잡아낸 것 중 계획 자체의 결함이었던 항목:
+
+- **OOM 판정이 좁았다** — `torch.cuda.OutOfMemoryError`만 잡으면 cuDNN workspace 실패
+  경로의 OOM을 놓쳐 고해상도 셀에서 sweep이 죽는다. `is_oom`이 메시지 기반 판정을 함께
+  하고, `bench/memory.py`와 `bench/throughput.py`가 이를 공유한다.
+- **sweep이 중간 실패 시 전부 잃었다** — 마지막에 한 번만 CSV를 썼다. 기본 `MODEL_NAMES`에
+  `vim_s`가 있어 실제 실행 시 10셀(GPU 1시간)을 재고 죽을 게 확정이었다. 이제 셀마다
+  다시 쓰고 실패는 `status="error"` 행으로 남는다.
+- **OOM 행에서 FLOPs를 버렸다** — `count_flops`는 CPU 트레이스라 OOM이 불가능한데 OOM이면
+  재기 전에 return했다. 이제 FLOPs를 가장 먼저 잰다.
+- **가중치 로딩을 E2/E3로 이관** — E1은 연산 비용만 재므로 가중치가 불필요하다.
+  `build_model(..., pretrained=True)`는 `NotImplementedError`를 던진다.
+- **그림이 측정 실패를 감췄다** — `status`가 `error`나 `no_cuda`인 행이 흔적 없이
+  빠져, 측정에 실패한 셀과 아직 재지 않은 셀이 구분되지 않았다. 출처 없는 수치가
+  문제였던 논문에 "왜 비었는지 알 수 없는 빈칸"을 넣는 셈이었다. 이제 `MISSING_STATUSES`가
+  셋 다 색과 라벨로 구분한다.
+
+### 테스트가 이름값을 하는지 확인할 것
+
+Task 12에서 리뷰어가 OOM을 0으로 그리는 회귀를 코드에 직접 주입했더니 테스트 3건이
+**그대로 통과**했다. `test_oom_rows_do_not_become_zero_points`가 `out.exists()`만
+단언하고 있었기 때문이다 — PNG는 어느 쪽이든 만들어진다.
+
+고친 방식은 단언 강화가 아니라 구조 변경이었다. "무엇을 그릴지" 판단을 `plotted_series`와
+`missing_cells` 두 순수 함수로 빼서, matplotlib 내부를 뒤지지 않고 직접 검증한다.
+남은 태스크에서도 같은 질문을 할 것 — **이 테스트는 자기가 막는다고 주장하는 회귀를
+넣었을 때 실제로 실패하는가.**
+
+그림에 그려지는 문자열은 전부 영어로 둔다. matplotlib 기본 폰트에 한글 글리프가 없어
+PNG에 네모 상자로 찍힌다. 코드 주석과 docstring은 한글 그대로다.
+
+### 4. 논문 개정 시 반영할 사실
+
+CMT-S 공식 구현의 실제 파라미터는 **26.26M**이다. 논문 3.3절은 "동일한 25M 이하 파라미터
+규모"라고 쓰는데 원논문 보고치(25.1M)와 공식 구현이 어긋난다. E1이 실측 파라미터를 CSV에
+남기므로 개정 시 이 문장을 실측에 맞출 것.
+
+### 5. latency 반복 측정 — 실행 안의 편차는 작고, 실행 사이의 편차가 크다
+
+`bench/latency.py`가 측정 블록(워밍업 50 + 계측 100)을 3번 반복하고, sweep이
+`latency_min_ms`·`latency_max_ms`·`latency_repeats_ms`를 CSV에 남긴다. 반복마다
+워밍업을 다시 도는 게 핵심이다 — 밖으로 빼면 첫 블록이 만든 클럭·할당자 상태를
+물려받아 편차가 측정에서 지워진다.
+
+**그런데 이 반복은 잡으려던 것을 잡지 못했다.** 한 프로세스 안의 반복은 전부
+잘 맞는다(최대 1.10배, 15셀 중 12셀이 1.03배 이내). 반면 같은 셀을 서로 다른
+실행에서 잰 값은 vim_s@224에서 30.005 ms와 18.134 ms로 **1.66배** 갈렸다.
+
+| | 최대 편차 | 어디서 |
+|---|---|---|
+| 실행 안 (반복 3회) | 1.10배 | deit_s@224 |
+| 실행 사이 (독립 sweep 2회) | 1.66배 | vim_s@224 |
+
+즉 배치 1 latency의 불확실성은 프로세스 경계에 있다. `LATENCY_SPREAD_WARN = 1.2`
+경고는 이번 실행에서 한 번도 뜨지 않았는데, 그게 "재현된다"는 뜻이 아니다.
+
+**결정 (2026-08-19)**: 독립 프로세스 반복 sweep은 하지 않는다. 그 GPU 시간이
+사는 것은 논문 주장에 쓰이지 않는 구간의 정밀도다 — 표 1의 주장은 고해상도
+cross-over에 걸려 있고, 그 구간(768² 이상)은 실행 안·사이 모두 1.04배 이내다.
+대신 한계로 명시한다.
+
+**논문에 쓸 때**:
+
+- 768²·1024² latency는 단일 값으로 인용해도 된다.
+- 224²·384²는 단일 값으로 인용하지 말 것. "실행 간 최대 1.66배 변동"을 함께
+  적고, 그 위에 결론을 세우지 말 것.
+- 근거 데이터는 손으로 옮겨 적지 말 것. 독립 두 실행의 원본이 git에 그대로 있다 —
+  실행 A는 `fa35e51:results/e1/sweep.csv`, 실행 B는 `e90ba8e:results/e1/sweep.csv`.
+  둘 다 같은 고정 환경에서 나왔고, `git show <해시>:<경로>`로 꺼내 대조하면 위
+  숫자가 재현된다.
+
+## 이 계획 이후
+
+- 계획 2: E2 ERF 정량 측정
+- 계획 3: E3 effective attention 환원과 dilution 커버리지
+- 계획 4: E4 2×2 요인 학습 ablation (Tiny-ImageNet, seed 3, epochs 300)
+- 계획 5: 논문 v2 · 포트폴리오 프로젝트 · 벨로그 후속 글
+
+E2·E3부터는 사전학습 체크포인트가 필요하다.
+
+| 모델 | 파라미터 | ImageNet Top-1 | 출처 |
+|------|----------|----------------|------|
+| CMT-Small | 26.26M(실측) | 83.5% | huawei-noah/Efficient-AI-Backbones Releases |
+| Vim-S | 26M | 80.5% | hustvl/Vim (HuggingFace) |
+| DeiT-S | 22.05M(실측) | 79.8% | timm |
