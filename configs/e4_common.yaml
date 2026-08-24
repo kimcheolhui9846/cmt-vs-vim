@@ -1,0 +1,19 @@
+# E4 학습 레시피. 네 칸에 동일하게 적용한다.
+# 원 DeiT 레시피에서 벗어나는 곳은 crop_scale 하나뿐이다.
+epochs: 300
+batch_size: 256
+workers: 8
+lr: 0.00025          # 5e-4 x 256/512
+min_lr: 0.00001
+warmup_epochs: 5
+weight_decay: 0.05
+label_smoothing: 0.1
+mixup: 0.8
+cutmix: 1.0
+drop_path: 0.1
+crop_scale: [0.6, 1.0]   # DeiT 원값 (0.08, 1.0)에서 벗어남 — 64px에서 8%는 5x5 픽셀
+amp: fp16
+ema: false
+seeds: [1, 2, 3]
+img_size: 64
+num_classes: 200

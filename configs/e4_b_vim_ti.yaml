@@ -1,0 +1,5 @@
+# Vim-Ti 스톡. 이 칸이 예산 기준점이다. 6,857,672개(6.86M), 목표 대비 -0.03%.
+cell: b_vim_ti
+embed_dim: 192
+depth: 24
+patch_size: 8
