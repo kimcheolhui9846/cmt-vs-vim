@@ -138,7 +138,7 @@ def test_a_bin_without_enough_instances_fails_loudly():
         sample_instances(_catalog(3), per_bin=INSTANCES_PER_BIN, seed=0)
 
 
-from experiments.e3_dilution import MEASUREMENT_COLUMNS, measure_instance  # noqa: E402
+from experiments.e3_dilution import MEASUREMENT_COLUMNS  # noqa: E402
 
 
 class _FakeModel:
