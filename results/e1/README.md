@@ -115,8 +115,12 @@ DeiT-S @224의 실측 4.608G는 논문 보고값 4.6G와 대조된다(`tests/tes
 것이며, 그 앞의 FLOPs·latency·peak memory는 이미 측정을 마친 값이라 살아 있다.
 
 **이 빈칸을 0으로 그리거나 "측정 안 함"으로 읽지 말 것.** 8GB에서 배치를
-올리지 못했다는 사실 자체가 기록이다. `figures/e1_plot.py`는 이 셀들을
-`MISSING_STATUSES`로 색과 라벨을 달리해 그린다.
+올리지 못했다는 사실 자체가 기록이다.
+
+다만 그림은 이 세 칸을 명시하지 않는다. `figures/e1_plot.py`가 색과 라벨을 다는
+`MISSING_STATUSES`는 `status`가 `oom`·`error`·`no_cuda`인 셀만 잡는데, 이
+칸들은 `status`가 `ok`이기 때문이다 — 처리량 패널에서 선이 끊긴 구간으로만
+나타난다. **사유는 CSV의 `error` 열에만 있다.**
 
 ## latency는 실행 사이에서 흔들린다
 
