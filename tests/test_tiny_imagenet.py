@@ -94,17 +94,46 @@ def test_train_transform_outputs_the_training_resolution():
 
 
 def test_eval_transform_is_deterministic():
-    """평가 경로에 무작위가 남아 있으면 같은 체크포인트가 매번 다른 top-1을 낸다."""
+    """평가 경로에 무작위가 남아 있으면 같은 체크포인트가 매번 다른 top-1을 낸다.
+
+    p=0.5 이항 변환(예: RandomHorizontalFlip)을 추가하는 회귀를 탐지하려면 같은 이미지를
+    여러 번 변환해서 모두 동일한지 확인해야 한다. 대칭 이미지는 뒤집혀도 같아 보이므로,
+    비대칭 이미지를 쓴다. 한 번 비교는 50% 확률로 통과하지만, 충분한 반복으로 이항 무작위성을
+    본질적으로 항상 탐지한다.
+    """
+    import numpy as np
     transform = build_eval_transform(size=64)
-    image = Image.new("RGB", (64, 64), color=(31, 63, 127))
-    assert torch.equal(transform(image), transform(image))
+    # 비대칭 이미지 생성: 좌반부 빨강, 우반부 녹색 (뒤집으면 다름)
+    img_array = np.zeros((64, 64, 3), dtype=np.uint8)
+    img_array[:, :32, 0] = 200  # 좌반부 빨강
+    img_array[:, 32:, 1] = 100  # 우반부 녹색
+    image = Image.fromarray(img_array, "RGB")
+    # 같은 이미지를 여러 번 변환해서 모두 동일한지 확인 (p=0.5 이항: 0.5^20 << 0.001%)
+    results = [transform(image) for _ in range(20)]
+    first = results[0]
+    for result in results[1:]:
+        assert torch.equal(first, result), "무작위가 감지됨 — eval 경로가 결정론적이지 않음"
 
 
 def test_mixup_produces_soft_targets():
-    """mixup이 꺼져 있으면 라벨이 정수로 남는다 — 레시피가 적용되지 않은 것이다."""
+    """mixup이 꺼져 있으면 라벨이 정수로 남는다 — 레시피가 적용되지 않은 것이다.
+
+    label_smoothing만으로도 one-hot과 달라지지만, 각 샘플의 부드러운 라벨은 자신의 클래스에만
+    주로 몰려 있다. mixup이 켜져 있으면 적어도 일부 샘플은 여러 클래스 간에 실제로 혼합되어
+    다양한 클래스에서 상당한 확률을 가진다.
+    """
     mixup = build_mixup(num_classes=200)
     x = torch.randn(4, 3, 64, 64)
-    y = torch.tensor([1, 2, 3, 4])
+    # 다양한 클래스 라벨을 써서 혼합이 일어나면 여러 클래스에 확률이 퍼져 있어야 함
+    y = torch.tensor([0, 50, 100, 150])
     _, soft = mixup(x, y)
     assert soft.shape == (4, 200)
-    assert not torch.equal(soft, torch.nn.functional.one_hot(y, 200).float())
+    # 적어도 하나의 샘플이 두 개 이상의 클래스에 상당한 확률(0.01 이상)을 가져야 함 (혼합 증거)
+    has_mixed = False
+    for sample_soft in soft:
+        # 값이 0.01 이상인 클래스 개수 세기
+        num_classes_above_threshold = (sample_soft >= 0.01).sum().item()
+        if num_classes_above_threshold >= 2:
+            has_mixed = True
+            break
+    assert has_mixed, "혼합이 실제로 일어났다면 적어도 하나 샘플이 여러 클래스에 확률을 가져야 함"
