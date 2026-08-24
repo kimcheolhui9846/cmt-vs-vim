@@ -35,12 +35,28 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 
 ## 현재 상태
 
-- 브랜치: `feat/e1-resolution-sweep` (main에 머지 안 됨, 원격에 푸시됨)
-- 테스트: **97건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
+*(2026-08-24 갱신. 아래 표가 이 저장소의 현재 지형이다.)*
+
+- 테스트: **268건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
   `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
-- 계획: `docs/superpowers/plans/2026-08-18-e1-resolution-sweep.md` (13 태스크 **전부 완료**)
-- SDD 원장: `.superpowers/sdd/2026-08-18-e1-resolution-sweep/progress.md` — git-ignored,
-  태스크별 완료·수정 라운드·이월된 minor가 전부 기록돼 있다
+- **E1·E2·E3 세 실험 모두 측정까지 완료**됐고, PR 세 개가 순서대로 쌓여 있다.
+  아래에서 위로 병합해야 각 PR의 diff가 자기 작업만 남는다.
+
+| 브랜치 | PR | base | 상태 |
+|--------|----|------|------|
+| `feat/e1-resolution-sweep` | #1 | `main` | 열림 |
+| `feat/e2-erf` | #2 | `feat/e1-resolution-sweep` | 열림 |
+| `feat/e3-dilution` | #3 | `feat/e2-erf` | 열림 |
+| `chore/portable-pinned-env` | 없음 | `feat/e3-dilution` | 푸시됨, PR 미생성 |
+
+`chore/portable-pinned-env`는 래퍼를 저장소로 들여오고 `CLAUDE.md`·`.gitattributes`를
+추가한 브랜치다. E3가 병합된 뒤에 PR을 올리는 편이 깔끔하다.
+
+- 계획: `docs/superpowers/plans/2026-08-{18,19,20}-*.md` — 세 실험 모두 전 태스크 완료
+- SDD 원장: `.superpowers/sdd/<계획이름>/progress.md` — git-ignored. 태스크별 완료·수정
+  라운드·이월된 minor·컨트롤러가 내린 판단이 전부 기록돼 있다. E3의 원장에는 그 위에
+  `task-9-facts.txt`가 있는데, **`results/e3/README.md`에 적힌 모든 수치의 출처**이자
+  무엇을 단독 인용해도 되는지에 대한 판정(ruling A~I)이다. PR이 병합될 때까지 지우지 않는다
 
 ### 완료된 태스크
 
