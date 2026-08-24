@@ -82,6 +82,17 @@ class HierarchicalVim(CMT):
                            d_state=d_state)
                 for i in range(depth)
             ])
+            # super().__init__()의 self.apply(self._init_weights)는 CMT의 원래
+            # attention 블록에 대해 이미 끝난 뒤이므로, 방금 새로 만든 MambaBlock의
+            # Conv2d(proj의 LPU, mlp/IRFFN의 세 conv)는 그 초기화를 받지 못하고
+            # PyTorch 기본값(kaiming_uniform_, mode='fan_in')으로 남는다. proj와
+            # mlp 서브트리에만 좁혀서 CMT와 같은 kaiming_normal_(mode='fan_out')을
+            # 다시 걸어준다 — self.mixer(Mamba)는 건드리지 않는다. Mamba는 dt_proj
+            # 등 자체 초기화가 있고, 거기에 Conv2d용 kaiming_normal_을 걸면 그 초기화가
+            # 깨진다.
+            for block in blocks:
+                block.proj.apply(self._init_weights)
+                block.mlp.apply(self._init_weights)
             setattr(self, name, blocks)
             cursor += depth
 
