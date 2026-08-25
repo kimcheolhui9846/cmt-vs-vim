@@ -6,6 +6,7 @@ optimizer 내부를 뒤지지 않고 직접 확인할 수 있다.
 import csv
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 
@@ -15,6 +16,7 @@ from bench.train import (
     evaluate,
     load_checkpoint,
     lr_at,
+    param_groups,
     save_checkpoint,
     train,
 )
@@ -61,7 +63,9 @@ def test_resume_returns_the_next_epoch(tmp_path):
     path = tmp_path / "ckpt.pt"
 
     save_checkpoint(path, model, optimizer, scaler, epoch=41)
-    assert load_checkpoint(path, model, optimizer, scaler) == 42
+    start, elapsed = load_checkpoint(path, model, optimizer, scaler)
+    assert start == 42
+    assert elapsed == 0.0
 
 
 def test_resume_restores_optimizer_state(tmp_path):
@@ -178,3 +182,159 @@ def test_evaluate_returns_top1_and_top5_as_fractions():
     assert top1 == 0.5
     assert top5 == 1.0
     assert top1 != top5
+
+
+def _tiny_cfg(epochs: int) -> TrainConfig:
+    return TrainConfig(epochs=epochs, lr=1e-3, min_lr=1e-4, warmup_epochs=1,
+                       weight_decay=0.05, label_smoothing=0.0, drop_path=0.0)
+
+
+def _one_third_loader():
+    """어떤 분류기를 넣어도 top-1이 정확히 1/3이 나오는 val 로더.
+
+    입력 세 장이 모두 같으므로 모델은 셋에 같은 클래스를 예측하고, 라벨은 0·1·2로
+    하나씩이라 정확히 한 장만 맞는다. 학습으로 가중치가 어떻게 바뀌든 값이 흔들리지
+    않으므로, "0이 아니어야 한다"가 아니라 "정확히 1/3이어야 한다"로 단언할 수 있다.
+    """
+    xs = torch.zeros(3, 4, dtype=torch.float32)
+    ys = torch.tensor([0, 1, 2])
+    return [(xs, ys)]
+
+
+def test_resume_at_the_final_epoch_reports_a_measured_score(tmp_path):
+    """마지막 epoch까지 끝낸 체크포인트로 재개하면 학습 루프가 한 번도 돌지 않는다.
+
+    이 창은 실제로 존재한다 — save_checkpoint(epoch=299)가 runs.csv의 write_rows보다
+    먼저 커밋되므로, 그 사이에 죽으면 이 run은 completed_runs에 없고 다시 들어와
+    여기로 온다. top1/top5의 초기값 0.0을 그대로 돌려주면 e4_ablation이 그것을
+    status="ok"인 0점으로 CSV에 적고, bench.factorial의 `not row.get("top1")` 가드는
+    문자열 "0.0"이 truthy라 그것을 막지 못한다. 그 0이 상호작용 항에 진짜 측정값으로
+    들어가 헤드라인 수치를 무너뜨린다.
+
+    그래서 이 경우 점수를 지어내지 말고 한 번 재서 돌려줘야 한다.
+    """
+    ckpt_path = tmp_path / "ckpt.pt"
+    curve_path = tmp_path / "curve.csv"
+    model = nn.Linear(4, 3)
+    val_loader = _one_third_loader()
+    train_loader = [(torch.randn(4, 4, dtype=torch.float32), torch.randint(0, 3, (4,)))]
+
+    train(model, train_loader, val_loader, _tiny_cfg(2), ckpt_path, curve_path,
+          device="cuda")
+    assert torch.load(ckpt_path, map_location="cpu")["epoch"] == 1  # 마지막 epoch
+
+    # 같은 cfg로 다시 들어온다 — start == cfg.epochs이므로 루프가 돌지 않는다.
+    result = train(model, train_loader, val_loader, _tiny_cfg(2), ckpt_path,
+                   curve_path, device="cuda")
+
+    assert result["top1"] == pytest.approx(1 / 3)
+    assert result["top5"] == pytest.approx(1.0)
+    assert result["epochs_done"] == 2  # 체크포인트가 실제로 끝낸 epoch 수
+
+
+def test_epochs_done_counts_what_actually_ran(tmp_path):
+    """cfg.epochs를 그대로 적으면, 중간에 멈춘 run도 300 epoch을 돈 것처럼 남는다."""
+    ckpt_path = tmp_path / "ckpt.pt"
+    curve_path = tmp_path / "curve.csv"
+    model = nn.Linear(4, 3)
+    loader = [(torch.randn(4, 4, dtype=torch.float32), torch.randint(0, 3, (4,)))]
+
+    result = train(model, loader, loader, _tiny_cfg(3), ckpt_path, curve_path,
+                   device="cuda")
+    assert result["epochs_done"] == 3
+
+
+def test_checkpoint_carries_elapsed_seconds(tmp_path):
+    model = nn.Linear(4, 3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scaler = torch.cuda.amp.GradScaler(enabled=False)
+    path = tmp_path / "ckpt.pt"
+
+    save_checkpoint(path, model, optimizer, scaler, epoch=7, elapsed_seconds=1234.5)
+    start, elapsed = load_checkpoint(path, model, optimizer, scaler)
+    assert start == 8
+    assert elapsed == pytest.approx(1234.5)
+
+
+def test_resumed_run_reports_cumulative_hours(tmp_path):
+    """hours는 공표하는 열이다. 호출당 시간만 적으면 재개한 run이 전부 과소보고된다.
+
+    설계상 재개는 선택이 아니고(GPU 공유, 최장 15시간) 대부분의 run이 최소 한 번은
+    끊긴다. epoch 290에서 끊긴 run이 0.3h로 적히면 그 값이 그대로 논문에 실린다.
+    """
+    ckpt_path = tmp_path / "ckpt.pt"
+    curve_path = tmp_path / "curve.csv"
+    model = nn.Linear(4, 3)
+    # train()이 만드는 것과 같은 두 그룹짜리 optimizer로 저장해야 재개가 상태를
+    # 그대로 읽는다 — 실제 run도 항상 이 모양의 optimizer가 저장한다.
+    optimizer = torch.optim.AdamW(param_groups(model, 0.05), lr=1e-3)
+    scaler = torch.cuda.amp.GradScaler()  # train()이 쓰는 것과 같은 활성 scaler
+    loader = [(torch.randn(4, 4, dtype=torch.float32), torch.randint(0, 3, (4,)))]
+
+    # 이미 1시간(3600초)을 돈 run이 epoch 0까지 끝내고 끊긴 상황
+    save_checkpoint(ckpt_path, model, optimizer, scaler, epoch=0,
+                    elapsed_seconds=3600.0)
+
+    result = train(model, loader, loader, _tiny_cfg(2), ckpt_path, curve_path,
+                   device="cuda")
+
+    assert result["hours"] >= 1.0
+    assert torch.load(ckpt_path, map_location="cpu")["elapsed_seconds"] >= 3600.0
+
+
+def test_weight_decay_skips_norms_and_biases():
+    """DeiT 레시피는 bias와 norm 가중치를 weight decay에서 뺀다.
+
+    파라미터 그룹 없이 AdamW(model.parameters(), weight_decay=0.05)로 두면 norm의
+    gamma·beta와 모든 bias까지 0으로 끌려가, 코드가 configs에 적힌 레시피와 다른
+    것을 돌게 된다. 네 칸에 같은 규칙으로 걸리므로 요인 대비는 흔들리지 않지만,
+    "레시피에서 벗어나는 곳은 한 군데"라는 문서의 주장이 거짓이 된다.
+    """
+    model = nn.Sequential(
+        nn.Conv2d(3, 4, 3, bias=True),
+        nn.BatchNorm2d(4),
+        nn.Flatten(),
+        nn.Linear(4, 3, bias=True),
+        nn.LayerNorm(3),
+    )
+    groups = param_groups(model, weight_decay=0.05)
+    assert len(groups) == 2
+    decayed = {id(p) for p in groups[0]["params"]}
+    undecayed = {id(p) for p in groups[1]["params"]}
+    assert groups[0]["weight_decay"] == 0.05
+    assert groups[1]["weight_decay"] == 0.0
+
+    conv, bn, _, linear, norm = model
+    for param in (bn.weight, bn.bias, norm.weight, norm.bias,
+                  conv.bias, linear.bias):
+        assert id(param) in undecayed
+    for param in (conv.weight, linear.weight):
+        assert id(param) in decayed
+
+    # 어느 파라미터도 빠지거나 두 번 세지지 않아야 한다
+    assert len(decayed) + len(undecayed) == len(list(model.parameters()))
+
+
+def test_train_builds_the_optimizer_with_two_decay_groups(tmp_path, monkeypatch):
+    """param_groups가 있어도 train이 그것을 쓰지 않으면 아무 의미가 없다."""
+    captured = {}
+    real_adamw = torch.optim.AdamW
+
+    def spy(params, *args, **kwargs):
+        params = list(params)
+        captured["params"] = params
+        return real_adamw(params, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim, "AdamW", spy)
+
+    model = nn.Sequential(nn.Linear(4, 3), nn.LayerNorm(3))
+    loader = [(torch.randn(4, 4, dtype=torch.float32), torch.randint(0, 3, (4,)))]
+    train(model, loader, loader, _tiny_cfg(1), tmp_path / "ckpt.pt",
+          tmp_path / "curve.csv", device="cuda")
+
+    groups = captured["params"]
+    assert all(isinstance(group, dict) for group in groups), (
+        "파라미터 그룹이 아니라 파라미터를 통째로 넘겼다 — 모든 파라미터에 같은 "
+        "weight decay가 걸린다"
+    )
+    assert [group["weight_decay"] for group in groups] == [0.05, 0.0]
