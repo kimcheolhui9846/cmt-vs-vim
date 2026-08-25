@@ -91,6 +91,12 @@ def param_groups(model, weight_decay: float) -> list[dict]:
     B·D, 즉 연산자 주효과에만 걸리는 교란이다. upstream이 표식을 다는 이유가
     바로 그것이다.
 
+    이 "연산자 축에만 걸린다"는 근사다. B와 D에서 이 규칙이 만드는 효과 크기(δ)가
+    같아야 구조 주효과·상호작용 항에서 정확히 지워지는데, 마킹되는 `A_log`·
+    `A_b_log`가 B 48개(depth 24), D 32개(depth 16)로 개수·깊이가 달라 δ_B = δ_D를
+    보장하지 않는다. 두 항에도 작은 잔차가 남을 수 있다 — 0이 아닐 수 있다는
+    뜻이지, 크다는 뜻은 아니다.
+
     합집합 규칙은 A·C에서 timm `param_groups_weight_decay(model,
     no_weight_decay_list=model.no_weight_decay())`와 같은 분할을 낸다 — 즉 DeiT
     원 레시피 그대로다. B·D에서는 3번 때문에 `A_log`·`A_b_log`가 더 빠지며, 이

@@ -16,6 +16,10 @@
 #      규칙 자체는 네 칸에 동일하지만 그런 파라미터가 B·D에만 있어, 이 한 가지는
 #      연산자 주효과 쪽에만 걸리는 편차다. A·C의 제외 집합은 DeiT 원 레시피
 #      (timm param_groups_weight_decay + model.no_weight_decay())와 정확히 같다.
+#      단, 이 상쇄는 B와 D에서 이 규칙이 만드는 효과 크기(δ)가 같을 때만 정확하다.
+#      마킹되는 A_log·A_b_log 개수가 B 48개, D 32개로 깊이·폭이 다르므로 δ_B = δ_D가
+#      정확히 성립한다는 보장은 없고, 구조 주효과·상호작용 항에 작은 잔차가 남을
+#      여지가 있다. 잔차가 0이 아닐 수 있다는 뜻이지, 크다는 뜻은 아니다.
 # 이전 버전은 pos_embed·cls_token이 decay를 받는 것을 두 번째 편차로 적었다. 그것은
 # param_groups가 이제 model.no_weight_decay()를 읽으므로 사라졌다.
 epochs: 300
