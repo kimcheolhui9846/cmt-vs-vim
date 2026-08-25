@@ -51,3 +51,36 @@ def test_common_config_pins_the_recipe():
     assert common["warmup_epochs"] == 5
     assert common["weight_decay"] == pytest.approx(0.05)
     assert common["seeds"] == [1, 2, 3]
+
+
+def test_recipe_keys_reach_the_code_that_uses_them():
+    """yaml의 값과 실제 동작이 갈라지지 않는지 확인한다.
+
+    이 파일의 다른 테스트가 "yaml이 레시피를 고정한다"고 단언하지만, 그 키를 코드가
+    읽지 않으면 그 단언은 yaml 파일 안에서만 참이다. mixup·cutmix·label_smoothing·
+    crop_scale은 실제 학습 경로를 만드는 함수의 기본값과 일치해야 한다 — 이 테스트가
+    깨지면 둘 중 한 곳만 고쳐진 것이다.
+    """
+    from data.tiny_imagenet import TRAIN_CROP_SCALE, build_mixup
+
+    common = load_common_config()
+    mixup = build_mixup(num_classes=10)
+    assert mixup.mixup_alpha == pytest.approx(common["mixup"])
+    assert mixup.cutmix_alpha == pytest.approx(common["cutmix"])
+    assert mixup.label_smoothing == pytest.approx(common["label_smoothing"])
+    assert tuple(common["crop_scale"]) == TRAIN_CROP_SCALE
+
+
+def test_record_only_keys_are_marked_as_such():
+    """동작을 바꾸지 못하는 키는 yaml에서 [record-only]로 표시되어야 한다.
+
+    amp와 ema는 코드가 읽지 않는다(fp16은 bench/train.py에 고정, EMA 경로는 구현이
+    없다). 표시가 없으면 값을 고치는 것이 조용한 no-op이 되고, 읽는 사람은 어느 키가
+    run을 통제하는지 한눈에 알 수 없다.
+    """
+    from pathlib import Path
+
+    text = Path("configs/e4_common.yaml").read_text(encoding="utf-8")
+    for key in ("amp", "ema"):
+        line = next(ln for ln in text.splitlines() if ln.startswith(f"{key}:"))
+        assert "[record-only]" in line, line

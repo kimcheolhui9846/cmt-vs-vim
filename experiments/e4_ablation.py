@@ -1,7 +1,8 @@
 """E4의 12 run을 돌린다.
 
 seed 1의 네 칸을 먼저 전부 돈다. 2x2 표가 한 번 완성되어 조기에 신호를 보기
-위해서다 — 칸 우선으로 돌면 43시간짜리 b_vim_ti 세 개를 끝낼 때까지 표가 비어 있다.
+위해서다 — 칸 우선으로 돌면 b_vim_ti의 seed 세 개(14.4h x 3 = 43.2h)를 끝낼 때까지
+표가 비어 있다.
 
 run마다 CSV를 다시 쓴다. E1에서 배운 것이다 — 마지막에 한 번만 쓰면 중간 실패가
 앞선 결과를 전부 지운다.
@@ -48,12 +49,22 @@ def completed_runs(csv_path: Path) -> set[tuple[str, int]]:
 
 
 def write_rows(csv_path: Path, rows: list[dict]) -> None:
+    """tmp에 다 쓴 뒤 이름을 바꾼다 — bench.train.save_checkpoint와 같은 규칙이다.
+
+    제자리에서 쓰다 죽으면 runs.csv가 찢어져 이미 끝난 run의 행이 사라진다. 그러면
+    그 run이 done에서 빠져 다시 들어오고, 마지막 epoch까지 끝낸 체크포인트를 만나
+    학습 루프가 한 번도 돌지 않는 경로로 간다. 그 경로가 조용한 0점을 만들던
+    자리다(bench/train.py의 epochs_done == start 분기). 원자적으로 쓰면 이 연쇄의
+    첫 고리가 생기지 않는다.
+    """
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=RUN_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
+    tmp.replace(path)
 
 
 def _seed_everything(seed: int) -> None:
@@ -110,13 +121,24 @@ def main(out_dir: str = "results/e4") -> None:
                                    drop_path=common["drop_path"])
             row["params"] = count_params(model)
             train_loader, val_loader = build_loaders(
-                root, common["batch_size"], common["workers"], common["img_size"]
+                root, common["batch_size"], common["workers"], common["img_size"],
+                crop_scale=tuple(common["crop_scale"]),
             )
             result = train(
                 model, train_loader, val_loader, cfg,
                 ckpt_path=Path("checkpoints") / f"e4_{cell}_seed{seed}.pt",
                 curve_path=out / "curves" / f"{cell}_seed{seed}.csv",
-                device="cuda", mixup=build_mixup(common["num_classes"]),
+                device="cuda",
+                # mixup·cutmix·label_smoothing은 전부 yaml에서 들어온다. 실제 학습에
+                # 적용되는 label smoothing은 여기 이 값 하나다 — mixup이 켜지면
+                # 손실이 SoftTargetCrossEntropy로 바뀌어 cfg.label_smoothing을 쓰는
+                # 분기가 실행되지 않는다.
+                mixup=build_mixup(
+                    common["num_classes"],
+                    mixup_alpha=common["mixup"],
+                    cutmix_alpha=common["cutmix"],
+                    label_smoothing=common["label_smoothing"],
+                ),
             )
             row.update({
                 "epochs_done": result["epochs_done"],

@@ -75,13 +75,18 @@ from data.voc import IMAGENET_MEAN, IMAGENET_STD
 TRAIN_CROP_SCALE = (0.6, 1.0)
 
 
-def build_train_transform(size: int = 64):
+def build_train_transform(size: int = 64, crop_scale=TRAIN_CROP_SCALE):
+    """crop_scale은 configs/e4_common.yaml에서 들어온다.
+
+    기본값을 이 파일에만 두면 yaml을 고쳐도 아무 일이 일어나지 않는다 — 값이 우연히
+    같아 지금은 티가 나지 않지만, 레시피를 바꾸려는 사람에게는 조용한 no-op이다.
+    """
     from timm.data import create_transform
 
     return create_transform(
         input_size=size,
         is_training=True,
-        scale=TRAIN_CROP_SCALE,
+        scale=tuple(crop_scale),
         ratio=(3 / 4, 4 / 3),
         auto_augment="rand-m9-mstd0.5-inc1",
         interpolation="bicubic",
@@ -104,21 +109,30 @@ def build_eval_transform(size: int = 64):
     ])
 
 
-def build_mixup(num_classes: int = NUM_CLASSES):
+def build_mixup(num_classes: int = NUM_CLASSES, mixup_alpha: float = 0.8,
+                cutmix_alpha: float = 1.0, label_smoothing: float = 0.1):
+    """세 값 모두 configs/e4_common.yaml에서 들어온다.
+
+    label_smoothing이 여기 있는 이유: mixup을 켜면 손실이 SoftTargetCrossEntropy로
+    바뀌어 nn.CrossEntropyLoss(label_smoothing=...)가 실행되지 않는다. 실제 학습에
+    적용되는 smoothing은 이 Mixup이 soft target을 만들 때 넣는 값 하나뿐이다.
+    """
     from timm.data import Mixup
 
     return Mixup(
-        mixup_alpha=0.8,
-        cutmix_alpha=1.0,
-        label_smoothing=0.1,
+        mixup_alpha=mixup_alpha,
+        cutmix_alpha=cutmix_alpha,
+        label_smoothing=label_smoothing,
         num_classes=num_classes,
     )
 
 
 def build_loaders(
-    root: Path, batch_size: int, workers: int, size: int = 64
+    root: Path, batch_size: int, workers: int, size: int = 64,
+    crop_scale=TRAIN_CROP_SCALE,
 ) -> tuple[DataLoader, DataLoader]:
-    train = ImageFolder(str(root / "train"), transform=build_train_transform(size))
+    train = ImageFolder(str(root / "train"),
+                        transform=build_train_transform(size, crop_scale))
     if train.class_to_idx != class_to_index(root):
         raise RuntimeError(
             "ImageFolder의 클래스 인덱스가 val 매핑과 다르다 — 라벨이 어긋난다"

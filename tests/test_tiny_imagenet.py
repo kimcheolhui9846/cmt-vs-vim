@@ -5,10 +5,19 @@ val이 ImageFolder 구조가 아니라는 것이 이 데이터셋의 함정이�
 """
 from pathlib import Path
 
+import numpy as np
 import pytest
+import torch
 from PIL import Image
 
-from data.tiny_imagenet import class_to_index, val_items
+from data.tiny_imagenet import (
+    TRAIN_CROP_SCALE,
+    build_eval_transform,
+    build_mixup,
+    build_train_transform,
+    class_to_index,
+    val_items,
+)
 
 
 def _make_tree(root: Path, wnids: list[str]) -> Path:
@@ -70,15 +79,6 @@ def test_missing_annotation_file_fails_loudly(tmp_path):
         val_items(base)
 
 
-import torch
-
-from data.tiny_imagenet import (
-    TRAIN_CROP_SCALE,
-    build_eval_transform,
-    build_mixup,
-    build_train_transform,
-)
-
 
 def test_train_crop_scale_is_the_documented_deviation():
     """DeiT 원 레시피는 (0.08, 1.0)이다. 64px에서 8%는 5x5 픽셀이라 라벨이 무의미해진다.
@@ -101,7 +101,6 @@ def test_eval_transform_is_deterministic():
     비대칭 이미지를 쓴다. 한 번 비교는 50% 확률로 통과하지만, 충분한 반복으로 이항 무작위성을
     본질적으로 항상 탐지한다.
     """
-    import numpy as np
     transform = build_eval_transform(size=64)
     # 비대칭 이미지 생성: 좌반부 빨강, 우반부 녹색 (뒤집으면 다름)
     img_array = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -137,3 +136,28 @@ def test_mixup_produces_soft_targets():
             has_mixed = True
             break
     assert has_mixed, "혼합이 실제로 일어났다면 적어도 하나 샘플이 여러 클래스에 확률을 가져야 함"
+
+
+def test_mixup_alphas_and_smoothing_come_from_the_caller():
+    """세 값이 configs/e4_common.yaml에서 들어와야 한다.
+
+    yaml에 적어 두고 코드에 같은 값을 박아 두면, yaml을 고치는 것이 조용한 no-op이
+    된다 — 값이 우연히 일치하는 동안에는 아무 증상도 없다.
+    """
+    mixup = build_mixup(num_classes=10, mixup_alpha=0.3, cutmix_alpha=0.7,
+                        label_smoothing=0.2)
+    assert mixup.mixup_alpha == pytest.approx(0.3)
+    assert mixup.cutmix_alpha == pytest.approx(0.7)
+    assert mixup.label_smoothing == pytest.approx(0.2)
+
+
+def _crop_scale_of(transform):
+    for step in transform.transforms:
+        if hasattr(step, "scale"):
+            return tuple(step.scale)
+    raise AssertionError("RandomResizedCrop을 찾지 못했다")
+
+
+def test_train_transform_honours_the_crop_scale_argument():
+    assert _crop_scale_of(build_train_transform(size=64, crop_scale=(0.2, 0.9))) == (0.2, 0.9)
+    assert _crop_scale_of(build_train_transform(size=64)) == TRAIN_CROP_SCALE

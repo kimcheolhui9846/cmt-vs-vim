@@ -35,10 +35,19 @@ def load_cell_config(cell: str, root: str | Path = "configs") -> dict:
 
 
 def search(cell: str, candidates: list[dict]) -> tuple[dict, int]:
-    """예산에 가장 가까운 후보를 고른다. 대역 안이 하나도 없으면 죽는다."""
+    """예산에 가장 가까운 후보를 고른다. 대역 안이 하나도 없으면 죽는다.
+
+    num_classes와 img_size는 configs에서 읽는다. 여기에 손으로 박아 두면 탐색이
+    본 학습과 다른 모델을 세게 되고 — head 크기가 num_classes에 비례하므로
+    파라미터 수가 실제로 달라진다 — "6.86M 대역 안"이라는 판정이 학습되는 모델에
+    대한 판정이 아니게 된다.
+    """
+    common = load_common_config()
     scored = []
     for cfg in candidates:
-        n = count_params(build_e4_model(cell, cfg, num_classes=200, img_size=64))
+        n = count_params(build_e4_model(cell, cfg,
+                                        num_classes=common["num_classes"],
+                                        img_size=common["img_size"]))
         scored.append((abs(n - PARAM_TARGET), n, cfg))
     scored.sort(key=lambda item: item[0])
     _, n, cfg = scored[0]
