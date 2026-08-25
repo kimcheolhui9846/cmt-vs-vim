@@ -37,14 +37,32 @@ def per_seed_effects(rows: list[dict]) -> dict[int, dict[str, float]]:
     return effects
 
 
-def summarize(rows: list[dict]) -> dict[str, tuple[float, float]]:
+EFFECT_NAMES = ("structure", "operator", "interaction")
+
+
+def summarize(rows: list[dict]) -> dict[str, tuple[float | None, float | None]]:
+    """효과별 (평균, 표준편차). 완성된 seed가 하나도 없으면 (None, None)이다.
+
+    (0.0, 0.0)을 돌려주면 안 된다. 캠페인 중간에 그린 그림이 "interaction:
+    +0.00 +- 0.00"으로 읽혀, 아무것도 재지 않은 상태를 이 실험의 헤드라인 수치가
+    0이라는 측정 결과로 주장하게 된다. 진짜 0(네 칸이 정말 같은 점수를 낸 경우)과
+    "아직 잴 수 없다"는 서로 다른 사실이므로 값의 종류로 구분한다.
+    """
     effects = per_seed_effects(rows)
     out = {}
-    for name in ("structure", "operator", "interaction"):
+    for name in EFFECT_NAMES:
         values = [effects[seed][name] for seed in sorted(effects)]
+        if not values:
+            out[name] = (None, None)
+            continue
         std = statistics.stdev(values) if len(values) > 1 else 0.0
-        out[name] = (statistics.fmean(values), std) if values else (0.0, 0.0)
+        out[name] = (statistics.fmean(values), std)
     return out
+
+
+def complete_seed_count(rows: list[dict]) -> int:
+    """네 칸이 모두 찬 seed의 수. 그림 제목이 n을 밝히는 데 쓴다."""
+    return len(per_seed_effects(rows))
 
 
 def cell_means(rows: list[dict]) -> dict[str, tuple[float, float]]:

@@ -3,6 +3,7 @@ import pytest
 
 from bench.factorial import (
     cell_means,
+    complete_seed_count,
     incomplete_seeds,
     per_seed_effects,
     summarize,
@@ -39,6 +40,11 @@ def test_summarize_reports_mean_and_std_across_seeds():
     }})
     mean, std = summarize(rows)["interaction"]
     assert mean == pytest.approx(0.10)   # (0.08 + 0.12) / 2
+    # 이 std > 0을 지우지 말 것. 효과를 seed별로 먼저 계산하고 그다음 평균내는지를
+    # 강제하는 것이 저장소 전체에서 이 한 줄뿐이다. 효과 공식이 선형이라 칸별로 먼저
+    # 평균낸 뒤 효과를 계산해도 mean은 같은 값이 나오고, 위의 mean 단언은 두 순서를
+    # 구분하지 못한다. 칸 우선으로 평균내면 seed 간 분산이 사라져 std가 0이 되므로,
+    # "효과가 seed 분산에 묻히는가"라는 이 실험의 판정 자체를 할 수 없게 된다.
     assert std > 0
 
 
@@ -62,3 +68,30 @@ def test_cell_means_average_over_seeds():
                   ("c_cmt_ti", 2): 0.60, ("d_hvim", 2): 0.58})
     mean, _ = cell_means(rows)["a_deit_ti"]
     assert mean == pytest.approx(0.55)
+
+
+def test_summarize_signals_no_complete_seed_instead_of_reporting_zero():
+    """완성된 seed가 없을 때 (0.0, 0.0)을 돌려주면 그림이 헤드라인 수치를 0으로
+    주장한다 — 아무것도 재지 않은 상태를 측정 결과로 내놓는 것이다.
+
+    진짜 0(네 칸이 정말 같은 점수를 낸 경우)과 구분되어야 하므로, 그 진짜 0도 함께
+    확인한다.
+    """
+    assert summarize([])["interaction"] == (None, None)
+
+    partial = _rows({("a_deit_ti", 1): 0.5, ("b_vim_ti", 1): 0.4})
+    assert summarize(partial)["structure"] == (None, None)
+
+    flat = _rows({("a_deit_ti", 1): 0.5, ("b_vim_ti", 1): 0.5,
+                  ("c_cmt_ti", 1): 0.5, ("d_hvim", 1): 0.5})
+    mean, std = summarize(flat)["interaction"]
+    assert mean == pytest.approx(0.0)  # 이쪽은 진짜 측정된 0이다
+    assert std == pytest.approx(0.0)
+
+
+def test_complete_seed_count_counts_only_full_tables():
+    assert complete_seed_count([]) == 0
+    assert complete_seed_count(_rows(SEED1)) == 1
+    assert complete_seed_count(
+        _rows(SEED1) + _rows({("a_deit_ti", 2): 0.5})
+    ) == 1

@@ -4,7 +4,13 @@ E1에서 리뷰어가 OOM을 0으로 그리는 회귀를 주입했더니 테스�
 out.exists()만 단언하고 있었기 때문이다. 그래서 여기서는 "무엇을 그릴지"의 판단을
 순수 함수로 빼서 직접 검증한다.
 """
-from figures.e4_plot import MISSING_STATUSES, incomplete_seed_positions, missing_cells
+from figures.e4_plot import (
+    MISSING_STATUSES,
+    bar_title,
+    effect_caption,
+    incomplete_seed_positions,
+    missing_cells,
+)
 
 
 def test_error_rows_are_listed_as_missing():
@@ -46,3 +52,36 @@ def test_incomplete_seed_annotations_get_distinct_positions():
     assert [seed for seed, _ in positions] == [1, 2]
     ys = [y for _, y in positions]
     assert len(set(ys)) == len(ys)  # 좌표가 서로 달라야 겹쳐 그려지지 않는다
+
+
+def test_caption_says_n_a_when_no_seed_is_complete():
+    """summarize가 (None, None)을 주는 상태를 "+0.00 +- 0.00"으로 찍으면, 캠페인
+    중간에 그린 그림이 이 실험의 헤드라인 수치를 0으로 주장한다.
+    """
+    caption = effect_caption({
+        "structure": (None, None),
+        "operator": (None, None),
+        "interaction": (None, None),
+    })
+    assert "interaction: n/a" in caption
+    assert "+0.00" not in caption
+    assert caption.isascii()
+
+
+def test_caption_still_prints_a_genuine_zero_as_a_number():
+    """진짜 0은 숫자로 적어야 한다 — n/a와 구분되지 않으면 반대 방향의 거짓말이다."""
+    caption = effect_caption({"interaction": (0.0, 0.0)})
+    assert caption == "interaction: +0.00 +- 0.00"
+
+
+def test_caption_formats_measured_effects_as_percent():
+    caption = effect_caption({"interaction": (0.0123, 0.0045)})
+    assert caption == "interaction: +1.23 +- 0.45"
+
+
+def test_bar_title_names_the_number_of_complete_seeds():
+    """행이 아예 없는 seed(사전 등록한 seed 3 -> 2 축소)는 제목에 n이 없으면
+    그림에서 보이지 않는다."""
+    assert "n=0" in bar_title(0)
+    assert "n=3" in bar_title(3)
+    assert bar_title(3).isascii()

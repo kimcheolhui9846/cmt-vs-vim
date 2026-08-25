@@ -11,7 +11,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from bench.factorial import CELLS, cell_means, incomplete_seeds, summarize  # noqa: E402
+from bench.factorial import (  # noqa: E402
+    CELLS,
+    cell_means,
+    complete_seed_count,
+    incomplete_seeds,
+    summarize,
+)
 
 MISSING_STATUSES = {
     "error": ("tab:orange", "ERROR"),
@@ -50,6 +56,32 @@ def incomplete_seed_positions(rows: list[dict]) -> list[tuple[int, float]]:
     return [(seed, 0.05 + 0.06 * i) for i, seed in enumerate(incomplete_seeds(rows))]
 
 
+def effect_caption(effects: dict) -> str:
+    """효과 캡션 문자열. 잴 수 없는 효과는 숫자가 아니라 n/a로 적는다.
+
+    summarize가 (None, None)을 주는 상태 — 네 칸이 다 찬 seed가 하나도 없는 상태 —
+    를 "+0.00 +- 0.00"으로 찍으면, 아무것도 재지 않은 그림이 이 실험의 헤드라인
+    수치를 0으로 주장한다. 캔버스에 그려지므로 문자열은 전부 ASCII다.
+    """
+    parts = []
+    for name, (mean, std) in effects.items():
+        if mean is None:
+            parts.append(f"{name}: n/a")
+        else:
+            parts.append(f"{name}: {mean * 100:+.2f} +- {std * 100:.2f}")
+    return "  ".join(parts)
+
+
+def bar_title(complete_seeds: int) -> str:
+    """완성된 seed 수를 제목에 밝힌다.
+
+    "mean +- std over seeds"만 적으면 행이 아예 없는 seed(사전 등록한 seed 3 -> 2
+    축소가 그렇다)가 그림에서 보이지 않는다. n을 적으면 두 칸짜리 평균인지 여섯
+    칸짜리 평균인지가 그림 자체에 남는다.
+    """
+    return f"E4 2x2 factorial (mean +- std over n={complete_seeds} complete seeds)"
+
+
 def plot_e4(runs_csv, curves_dir, out_path) -> Path:
     rows = _read(runs_csv)
     means = cell_means(rows)
@@ -65,13 +97,9 @@ def plot_e4(runs_csv, curves_dir, out_path) -> Path:
     bar_ax.set_xticks(range(len(CELLS)))
     bar_ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     bar_ax.set_ylabel("Tiny-ImageNet top-1 (%)")
-    bar_ax.set_title("E4 2x2 factorial (mean +- std over seeds)")
+    bar_ax.set_title(bar_title(complete_seed_count(rows)))
 
-    caption = "  ".join(
-        f"{name}: {mean * 100:+.2f} +- {std * 100:.2f}"
-        for name, (mean, std) in effects.items()
-    )
-    bar_ax.annotate(caption, xy=(0.5, -0.32), xycoords="axes fraction",
+    bar_ax.annotate(effect_caption(effects), xy=(0.5, -0.32), xycoords="axes fraction",
                     ha="center", fontsize=8)
 
     for cell in CELLS:
