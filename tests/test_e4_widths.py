@@ -47,6 +47,15 @@ def test_flat_cells_use_patch_8():
 
 
 def test_common_config_pins_the_recipe():
+    """설계 문서(`docs/superpowers/specs/2026-08-25-e4-ablation-design.md`)의
+    레시피 블록과 값 단위로 대조한다.
+
+    이전 판은 mixup·cutmix·label_smoothing·crop_scale을 여기서 재지 않고
+    `build_mixup`·`build_train_transform`의 기본 인자와 같은지로 간접 확인했다.
+    `test_recipe_keys_reach_the_code_that_uses_them`이 그 간접 확인을 걷어내면서
+    (배선은 재지만 값은 재지 않는 방식으로 바뀌면서) 이 네 키와 drop_path가
+    yaml에서만 참인 채로 남았다 — 값을 실수로 고쳐도 여기서 잡히지 않는 상태였다.
+    """
     common = load_common_config()
     assert common["epochs"] == 300
     assert common["batch_size"] == 256
@@ -54,6 +63,11 @@ def test_common_config_pins_the_recipe():
     assert common["warmup_epochs"] == 5
     assert common["weight_decay"] == pytest.approx(0.05)
     assert common["seeds"] == [1, 2, 3]
+    assert common["mixup"] == pytest.approx(0.8)
+    assert common["cutmix"] == pytest.approx(1.0)
+    assert common["label_smoothing"] == pytest.approx(0.1)
+    assert common["drop_path"] == pytest.approx(0.1)
+    assert common["crop_scale"] == [0.6, 1.0]
 
 
 def test_recipe_keys_reach_the_code_that_uses_them(monkeypatch):
@@ -83,13 +97,17 @@ def test_recipe_keys_reach_the_code_that_uses_them(monkeypatch):
         seen["crop_scale"] = crop_scale
         return object(), object()
 
+    def spy_model(*args, **kwargs):
+        seen["model_kwargs"] = kwargs
+        return object()
+
     monkeypatch.setattr(e4_ablation, "load_common_config", lambda *a, **k: tweaked)
     monkeypatch.setattr(e4_ablation, "load_cell_config", lambda *a, **k: {})
     monkeypatch.setattr(e4_ablation, "snapshot", lambda: {})
     monkeypatch.setattr(e4_ablation, "ensure_tiny_imagenet", lambda *a, **k: Path("."))
     monkeypatch.setattr(e4_ablation, "build_mixup", spy_mixup)
     monkeypatch.setattr(e4_ablation, "build_loaders", spy_loaders)
-    monkeypatch.setattr(e4_ablation, "build_e4_model", lambda *a, **k: object())
+    monkeypatch.setattr(e4_ablation, "build_e4_model", spy_model)
     monkeypatch.setattr(e4_ablation, "count_params", lambda model: 0)
     monkeypatch.setattr(e4_ablation, "train", lambda *a, **k: {
         "epochs_done": 1, "top1": 0.1, "top5": 0.2, "hours": 0.0,
@@ -104,6 +122,9 @@ def test_recipe_keys_reach_the_code_that_uses_them(monkeypatch):
     assert kwargs["cutmix_alpha"] == pytest.approx(0.37)
     assert kwargs["label_smoothing"] == pytest.approx(0.03)
     assert seen["crop_scale"] == (0.31, 0.97)
+    # drop_path는 TrainConfig가 아니라 build_e4_model로 직접 간다(models/registry.py) —
+    # 이 경로가 그 값이 실제로 도착하는 유일한 증거다.
+    assert seen["model_kwargs"]["drop_path"] == pytest.approx(tweaked["drop_path"])
 
 
 def test_crop_scale_reaches_the_transform():
