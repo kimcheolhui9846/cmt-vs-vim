@@ -80,3 +80,35 @@ def test_every_cell_actually_receives_drop_path(cell, cfg):
 
     assert max(probs(with_dp) or [0.0]) > 0.0, f"{cell}에 drop path가 걸리지 않았다"
     assert max(probs(without) or [0.0]) == 0.0
+
+
+@pytest.mark.parametrize("cell,cfg", [
+    ("a_deit_ti", FLAT), ("b_vim_ti", FLAT_VIM),
+    ("c_cmt_ti", HIER), ("d_hvim", HIER),
+])
+def test_no_cell_carries_a_classifier_dropout(cell, cfg):
+    """네 칸의 classifier dropout이 전부 0이어야 한다.
+
+    C·D에만 dp=0.1이 걸리면 상호작용 항 (D-B)-(C-A)에서는 상쇄되지만 구조 주효과
+    (C+D)/2 - (A+B)/2 — 사전 등록 예측 1번 — 에는 그대로 남는다. drop_path에서 이미
+    한 번 잡은 결함이 형제 인자에 그대로 살아 있던 자리다.
+    """
+    model = build_e4_model(cell, cfg, img_size=64)
+    probs = {
+        name: module.p
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Dropout)
+    }
+    assert all(p == 0.0 for p in probs.values()), f"{cell}: {probs}"
+
+
+def test_the_flat_row_and_the_hierarchical_row_share_one_dropout():
+    """C를 D와만 대조하면 두 칸이 같이 틀렸을 때 통과한다 — 평면 행과 대조한다."""
+    heads = {}
+    for cell, cfg in (("a_deit_ti", FLAT), ("b_vim_ti", FLAT_VIM),
+                      ("c_cmt_ti", HIER), ("d_hvim", HIER)):
+        model = build_e4_model(cell, cfg, img_size=64)
+        probs = [module.p for module in model.modules()
+                 if isinstance(module, torch.nn.Dropout)]
+        heads[cell] = max(probs) if probs else 0.0
+    assert len(set(heads.values())) == 1, heads

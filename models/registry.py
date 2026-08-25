@@ -1,6 +1,11 @@
-"""비교 대상 세 모델의 단일 진입점.
+"""모델을 만드는 단일 진입점. 두 실험군이 여기를 지난다.
 
-파라미터가 22~26M로 이미 정렬되어 있어 별도 조정 없이 통제가 성립한다.
+E1~E3의 세 모델(`MODEL_NAMES`)은 공표 설정 그대로이며 파라미터가 22~26M로 이미
+정렬되어 있어 별도 조정 없이 통제가 성립한다.
+
+E4의 네 칸(`E4_CELLS`)은 다르다. 스톡 설정이 A 5.43M / B 6.86M / C 10.55M로 두 배
+가까이 벌어져 있어, `experiments/e4_widths.py`의 명시적 탐색으로 폭과 depth를 골라
+6.86M +-5%에 맞춘 조정 모델이다. 그래서 이 칸들의 폭은 반드시 configs에서 들어온다.
 """
 from contextlib import contextmanager
 
@@ -87,6 +92,13 @@ def build_e4_model(cell: str, cfg: dict, num_classes: int = 200,
     이름이 프레임워크마다 다르므로(timm·VisionMamba는 drop_path_rate, CMT도
     drop_path_rate — CMT의 dp는 stochastic depth가 아니라 classifier dropout이다)
     여기서 한 번에 번역한다.
+
+    같은 이유로 classifier dropout(CMT의 `dp`)도 네 칸에 0.0으로 맞춘다. C·D에만
+    dp=0.1을 주면 상호작용 항 (D-B)-(C-A)에서는 상쇄되지만 구조 주효과
+    (C+D)/2 - (A+B)/2 — 사전 등록 예측 1번 — 에는 그대로 남는다. A는 timm ViT의
+    drop_rate 기본값 0, B는 VisionMamba의 drop_rate 기본값 0이라 head 앞에 dropout이
+    없으므로, 네 칸을 맞추는 방향은 0.0이다. dropout에는 파라미터가 없으므로 6.86M
+    예산 정렬은 이 값에 영향을 받지 않는다(tests/test_e4_widths.py가 확인한다).
     """
     if cell not in E4_CELLS:
         raise ValueError(
@@ -112,7 +124,7 @@ def build_e4_model(cell: str, cfg: dict, num_classes: int = 200,
             depth=cfg["depth"], rms_norm=True, residual_in_fp32=True,
             fused_add_norm=True, final_pool_type="mean", if_abs_pos_embed=True,
             if_rope=False, if_rope_residual=False, bimamba_type="v2",
-            if_cls_token=True, if_devide_out=True, use_middle_cls_token=True,
+            if_cls_token=True, if_divide_out=True, use_middle_cls_token=True,
             num_classes=num_classes, drop_path_rate=drop_path,
         )
 
@@ -124,7 +136,7 @@ def build_e4_model(cell: str, cfg: dict, num_classes: int = 200,
             embed_dims=list(cfg["embed_dims"]), stem_channel=cfg["stem_channel"],
             num_heads=[1, 2, 4, 8], depths=list(cfg["depths"]),
             mlp_ratios=[3.6] * 4, qkv_bias=True, qk_ratio=1,
-            sr_ratios=[8, 4, 2, 1], drop_path_rate=drop_path, dp=0.1,
+            sr_ratios=[8, 4, 2, 1], drop_path_rate=drop_path, dp=0.0,
         )
 
     from models.hvim import build_hvim
@@ -132,5 +144,5 @@ def build_e4_model(cell: str, cfg: dict, num_classes: int = 200,
     return build_hvim(
         img_size=img_size, num_classes=num_classes,
         embed_dims=tuple(cfg["embed_dims"]), depths=tuple(cfg["depths"]),
-        stem_channel=cfg["stem_channel"], drop_path_rate=drop_path, dp=0.1,
+        stem_channel=cfg["stem_channel"], drop_path_rate=drop_path, dp=0.0,
     )
