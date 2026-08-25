@@ -121,6 +121,11 @@ def test_mixup_produces_soft_targets():
     주로 몰려 있다. mixup이 켜져 있으면 적어도 일부 샘플은 여러 클래스 간에 실제로 혼합되어
     다양한 클래스에서 상당한 확률을 가진다.
     """
+    # NumPy 전역 상태를 여기서 고정한다. timm.data.Mixup은 np.random에서 lam을
+    # 뽑으므로, seed를 걸지 않으면 이 테스트가 "import 순서가 남긴 아무 상태"에
+    # 대고 확률적 성질을 단언하게 된다 — 실제로 무관한 import 하나가 이 테스트를
+    # 깨뜨린 적이 있다. 단언하는 내용은 그대로 두고 순서 의존만 없앤다.
+    np.random.seed(0)
     mixup = build_mixup(num_classes=200)
     x = torch.randn(4, 3, 64, 64)
     # 다양한 클래스 라벨을 써서 혼합이 일어나면 여러 클래스에 확률이 퍼져 있어야 함

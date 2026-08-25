@@ -34,15 +34,20 @@ def load_cell_config(cell: str, root: str | Path = "configs") -> dict:
     )
 
 
-def search(cell: str, candidates: list[dict]) -> tuple[dict, int]:
+def search(cell: str, candidates: list[dict],
+           root: str | Path = "configs") -> tuple[dict, int]:
     """예산에 가장 가까운 후보를 고른다. 대역 안이 하나도 없으면 죽는다.
 
     num_classes와 img_size는 configs에서 읽는다. 여기에 손으로 박아 두면 탐색이
     본 학습과 다른 모델을 세게 되고 — head 크기가 num_classes에 비례하므로
     파라미터 수가 실제로 달라진다 — "6.86M 대역 안"이라는 판정이 학습되는 모델에
     대한 판정이 아니게 된다.
+
+    `root`를 인자로 받는 이유는 형제 로더 둘(`load_common_config`·`load_cell_config`)과
+    같아야 하기 때문이다. 인자 없이 부르면 이 함수만 조용히 현재 작업 디렉터리에
+    의존해, 저장소 루트가 아닌 곳에서 부르면 FileNotFoundError로 죽는다.
     """
-    common = load_common_config()
+    common = load_common_config(root)
     scored = []
     for cfg in candidates:
         n = count_params(build_e4_model(cell, cfg,

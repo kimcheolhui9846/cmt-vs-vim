@@ -64,10 +64,16 @@ class HierarchicalVim(CMT):
 
     def __init__(self, img_size=64, num_classes=200, embed_dims=(52, 104, 208, 416),
                  stem_channel=16, depths=(2, 10, 2, 2), mlp_ratios=(3.6, 3.6, 3.6, 3.6),
-                 d_state=16, drop_path_rate=0.1, dp=0.1):
+                 d_state=16, drop_path_rate=0.1, dp=0.0):
         # CMT에서 dp는 stochastic depth가 아니라 head 앞 classifier dropout이다
         # (cmt_official.py:283의 self._drop). stochastic depth는 drop_path_rate이고
         # 기본값이 0이다. 두 인자를 섞으면 C와 D의 레시피가 조용히 갈라진다.
+        #
+        # dp의 기본값이 0.0인 이유도 같다. 레지스트리(models/registry.py)가 네 칸을
+        # dp=0.0으로 맞춰 세우므로 — A·B에는 head 앞 dropout이 없다 — 여기 기본값이
+        # 0.1로 남아 있으면 레지스트리를 거치지 않고 이 클래스를 직접 부르는 코드가
+        # D에만 dropout이 걸린 모델을 얻는다. 그 차이는 상호작용 항에서는 상쇄되지만
+        # 구조 주효과(사전 등록 예측 1번)에는 그대로 남는다.
         super().__init__(
             img_size=img_size, num_classes=num_classes, embed_dims=list(embed_dims),
             stem_channel=stem_channel, num_heads=[1, 2, 4, 8], depths=list(depths),
@@ -137,7 +143,7 @@ class HierarchicalVim(CMT):
 def build_hvim(img_size=64, num_classes=200, embed_dims=(52, 104, 208, 416),
                depths=(2, 10, 2, 2), stem_channel=16,
                mlp_ratios=(3.6, 3.6, 3.6, 3.6), d_state=16,
-               drop_path_rate=0.1, dp=0.1):
+               drop_path_rate=0.1, dp=0.0):
     return HierarchicalVim(
         img_size=img_size, num_classes=num_classes, embed_dims=embed_dims,
         stem_channel=stem_channel, depths=depths, mlp_ratios=mlp_ratios,

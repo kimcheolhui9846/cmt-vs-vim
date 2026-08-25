@@ -1,4 +1,7 @@
 """폭 정렬의 관문. 이 대역을 벗어난 칸이 있으면 요인 대비에 용량 교란이 남는다."""
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from experiments.e4_widths import (
@@ -53,22 +56,87 @@ def test_common_config_pins_the_recipe():
     assert common["seeds"] == [1, 2, 3]
 
 
-def test_recipe_keys_reach_the_code_that_uses_them():
-    """yaml의 값과 실제 동작이 갈라지지 않는지 확인한다.
+def test_recipe_keys_reach_the_code_that_uses_them(monkeypatch):
+    """yaml의 값이 오케스트레이터의 호출을 타고 실제 객체까지 가는지 확인한다.
 
     이 파일의 다른 테스트가 "yaml이 레시피를 고정한다"고 단언하지만, 그 키를 코드가
-    읽지 않으면 그 단언은 yaml 파일 안에서만 참이다. mixup·cutmix·label_smoothing·
-    crop_scale은 실제 학습 경로를 만드는 함수의 기본값과 일치해야 한다 — 이 테스트가
-    깨지면 둘 중 한 곳만 고쳐진 것이다.
-    """
-    from data.tiny_imagenet import TRAIN_CROP_SCALE, build_mixup
+    읽지 않으면 그 단언은 yaml 파일 안에서만 참이다.
 
-    common = load_common_config()
-    mixup = build_mixup(num_classes=10)
-    assert mixup.mixup_alpha == pytest.approx(common["mixup"])
-    assert mixup.cutmix_alpha == pytest.approx(common["cutmix"])
-    assert mixup.label_smoothing == pytest.approx(common["label_smoothing"])
-    assert tuple(common["crop_scale"]) == TRAIN_CROP_SCALE
+    이전 판은 yaml 값을 `build_mixup`·`build_train_transform`의 **기본 인자**와
+    비교했다. 그건 배선을 재는 것이 아니라 두 곳의 값이 우연히 같은지를 재는 것이라,
+    yaml에서 레시피를 정당하게 재조정하는 순간 — 배선을 만든 목적이 바로 그것이다 —
+    배선이 멀쩡한데도 빨개진다. 그래서 여기서는 yaml에 없는 값을 일부러 넣고,
+    `experiments.e4_ablation.main`이 그 값을 그대로 실어 보내는지를 본다.
+    """
+    from experiments import e4_ablation
+
+    tweaked = {**load_common_config(), "mixup": 0.42, "cutmix": 0.37,
+               "label_smoothing": 0.03, "crop_scale": [0.31, 0.97], "seeds": [1],
+               "epochs": 1}
+    seen = {}
+
+    def spy_mixup(num_classes, **kwargs):
+        seen["mixup"] = (num_classes, kwargs)
+        return object()
+
+    def spy_loaders(root, batch_size, workers, size, crop_scale=None):
+        seen["crop_scale"] = crop_scale
+        return object(), object()
+
+    monkeypatch.setattr(e4_ablation, "load_common_config", lambda *a, **k: tweaked)
+    monkeypatch.setattr(e4_ablation, "load_cell_config", lambda *a, **k: {})
+    monkeypatch.setattr(e4_ablation, "snapshot", lambda: {})
+    monkeypatch.setattr(e4_ablation, "ensure_tiny_imagenet", lambda *a, **k: Path("."))
+    monkeypatch.setattr(e4_ablation, "build_mixup", spy_mixup)
+    monkeypatch.setattr(e4_ablation, "build_loaders", spy_loaders)
+    monkeypatch.setattr(e4_ablation, "build_e4_model", lambda *a, **k: object())
+    monkeypatch.setattr(e4_ablation, "count_params", lambda model: 0)
+    monkeypatch.setattr(e4_ablation, "train", lambda *a, **k: {
+        "epochs_done": 1, "top1": 0.1, "top5": 0.2, "hours": 0.0,
+    })
+
+    with tempfile.TemporaryDirectory() as tmp:
+        e4_ablation.main(out_dir=tmp)
+
+    num_classes, kwargs = seen["mixup"]
+    assert num_classes == tweaked["num_classes"]
+    assert kwargs["mixup_alpha"] == pytest.approx(0.42)
+    assert kwargs["cutmix_alpha"] == pytest.approx(0.37)
+    assert kwargs["label_smoothing"] == pytest.approx(0.03)
+    assert seen["crop_scale"] == (0.31, 0.97)
+
+
+def test_crop_scale_reaches_the_transform():
+    """넘긴 crop_scale이 실제 변환의 scale로 도착하는지 본다.
+
+    yaml 값과 이 함수의 기본 인자가 같은지는 배선의 증거가 아니다 — 값을 바꿔
+    넣고 그 값이 도착하는지를 봐야 한다.
+    """
+    from data.tiny_imagenet import build_train_transform
+
+    transform = build_train_transform(64, crop_scale=(0.31, 0.97))
+    scales = [tuple(t.scale) for t in transform.transforms if hasattr(t, "scale")]
+    assert (0.31, 0.97) in scales
+
+
+def test_search_reads_configs_from_the_root_it_is_given():
+    """`search`가 현재 작업 디렉터리가 아니라 인자로 받은 root를 읽어야 한다.
+
+    형제 로더 둘은 이미 `root`를 받는데 이 함수만 받지 않아, 저장소 루트 밖에서
+    부르면 조용히 다른 곳을 보거나 죽었다.
+    """
+    from experiments.e4_widths import search
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # num_classes를 10으로 줄인 configs를 따로 만든다. head 크기가
+        # num_classes에 비례하므로 파라미터 수가 실제로 달라진다.
+        (Path(tmp) / "e4_common.yaml").write_text(
+            "num_classes: 10\nimg_size: 64\n", encoding="utf-8")
+        candidates = [{"embed_dim": 216, "depth": 12, "patch_size": 8}]
+        _, small = search("a_deit_ti", candidates, root=tmp)
+
+    _, full = search("a_deit_ti", candidates, root="configs")
+    assert small < full  # root를 무시했다면 두 값이 같다
 
 
 def test_record_only_keys_are_marked_as_such():
