@@ -88,6 +88,9 @@ def overfit_subset(cell: str, n: int = 200, steps: int = 300,
     # 돌게 된다. (2) 이 관문은 99시간을 태우기 전 마지막 사람 점검이므로, 본 학습이
     # 실제로 지나는 코드 경로를 지나야 한다 — 여기서 optimizer를 따로 세우면
     # param_groups의 제외 규칙은 관문에서 한 번도 실행되지 않는다.
+    # 단, weight_decay=0.0이라 두 그룹 다 decay=0.0으로 나온다 — 이 관문이 초록이어도
+    # A_log·A_b_log를 뺀 제외 규칙 자체(어느 파라미터가 어느 그룹에 들어가는지)를
+    # 증명하지는 못한다. 그 규칙은 `tests/test_train.py`가 덮는다.
     optimizer = torch.optim.AdamW(param_groups(model, cfg.weight_decay), lr=cfg.lr)
     scaler = torch.cuda.amp.GradScaler()
     criterion = nn.CrossEntropyLoss()
