@@ -4,6 +4,9 @@ E1에서 리뷰어가 OOM을 0으로 그리는 회귀를 주입했더니 테스�
 out.exists()만 단언하고 있었기 때문이다. 그래서 여기서는 "무엇을 그릴지"의 판단을
 순수 함수로 빼서 직접 검증한다.
 """
+import pytest
+
+from bench.factorial import cell_means, complete_seed_count
 from figures.e4_plot import (
     MISSING_STATUSES,
     bar_title,
@@ -85,3 +88,40 @@ def test_bar_title_names_the_number_of_complete_seeds():
     assert "n=0" in bar_title(0)
     assert "n=3" in bar_title(3)
     assert bar_title(3).isascii()
+
+
+def test_bar_title_does_not_attach_n_to_the_bars():
+    """n은 캡션의 효과에 붙어야 한다 — 막대에 붙이면 제목이 틀린 말을 한다.
+
+    막대는 cell_means에서 나오고 그 함수는 칸별로 status == "ok"인 행을 전부
+    평균낸다(미완성 seed의 행도 포함). 캡션의 세 효과는 네 칸이 모두 찬 seed에
+    대해서만 계산된다. A가 성공 seed 3개, D가 2개인 중간 상태에서 이전 제목
+    "mean +- std over n=2 complete seeds"는 3-seed 평균인 A 막대를 n=2라고
+    주장했다.
+    """
+    bars_line, effects_line = bar_title(2).splitlines()
+    assert "bars" in bars_line
+    assert "n=" not in bars_line, bars_line
+    assert "effects" in effects_line
+    assert "n=2" in effects_line
+
+
+def test_bar_title_describes_the_sample_cell_means_actually_uses():
+    """제목의 막대 설명이 cell_means의 실제 표본과 맞는지 대조한다.
+
+    A만 세 seed가 성공하고 D는 두 seed뿐인 상태를 만들어, complete_seed_count가
+    2인데 A 막대는 세 run의 평균이라는 것을 직접 확인한다. 제목이 그 둘을 하나의
+    n으로 뭉뚱그리면 안 되는 이유가 이 어긋남이다.
+    """
+    rows = [
+        {"cell": cell, "seed": str(seed), "top1": "0.5", "status": "ok"}
+        for seed in (1, 2)
+        for cell in ("a_deit_ti", "b_vim_ti", "c_cmt_ti", "d_hvim")
+    ] + [{"cell": "a_deit_ti", "seed": "3", "top1": "0.8", "status": "ok"}]
+
+    assert complete_seed_count(rows) == 2
+    assert cell_means(rows)["a_deit_ti"][0] == pytest.approx(0.6)  # (0.5+0.5+0.8)/3
+
+    bars_line, effects_line = bar_title(complete_seed_count(rows)).splitlines()
+    assert "all ok runs" in bars_line
+    assert "n=2" in effects_line

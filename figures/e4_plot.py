@@ -73,13 +73,26 @@ def effect_caption(effects: dict) -> str:
 
 
 def bar_title(complete_seeds: int) -> str:
-    """완성된 seed 수를 제목에 밝힌다.
+    """막대와 캡션이 서로 다른 표본에서 나온다는 사실을 제목에 적는다.
 
-    "mean +- std over seeds"만 적으면 행이 아예 없는 seed(사전 등록한 seed 3 -> 2
-    축소가 그렇다)가 그림에서 보이지 않는다. n을 적으면 두 칸짜리 평균인지 여섯
-    칸짜리 평균인지가 그림 자체에 남는다.
+    막대는 `bench.factorial.cell_means`에서 나오고 그 함수는 칸별로 `status == "ok"`인
+    행을 전부 평균낸다 — 네 칸이 다 차지 않은 seed의 행도 포함한다. 반면 캡션의 세
+    효과는 `summarize`가 네 칸이 모두 찬 seed에 대해서만 계산한다. 그래서 A가 성공
+    seed 3개, D가 2개인 중간 상태에서 두 표본 크기가 실제로 다르다.
+
+    이전 제목 "mean +- std over n=<k> complete seeds"는 그 n을 막대에 붙여, A 막대가
+    3-seed 평균인데 n=2라고 주장했다. 막대 쪽 표본을 completed seed로 좁히지 않고
+    문구를 고치는 쪽을 택한 이유는, 좁히면 실제로 측정된 run이 그림에서 사라지고
+    완성된 seed가 0인 동안 네 막대가 전부 높이 0으로 그려지기 때문이다 — 방금
+    `summarize`에서 걷어낸 "재지 않은 것을 측정된 0으로 그리는" 실패와 같은 모양이다.
+
+    두 줄로 돌려준다. 첫 줄이 막대의 표본을, 둘째 줄이 캡션 효과의 n을 밝힌다.
+    캔버스에 그려지므로 전부 ASCII다.
     """
-    return f"E4 2x2 factorial (mean +- std over n={complete_seeds} complete seeds)"
+    return (
+        "E4 2x2 factorial -- bars: mean +- std of all ok runs per cell\n"
+        f"effects below: n={complete_seeds} seeds with all four cells"
+    )
 
 
 def plot_e4(runs_csv, curves_dir, out_path) -> Path:
@@ -97,7 +110,8 @@ def plot_e4(runs_csv, curves_dir, out_path) -> Path:
     bar_ax.set_xticks(range(len(CELLS)))
     bar_ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     bar_ax.set_ylabel("Tiny-ImageNet top-1 (%)")
-    bar_ax.set_title(bar_title(complete_seed_count(rows)))
+    # 두 줄짜리 제목이라 기본 크기로는 패널 폭을 넘어간다.
+    bar_ax.set_title(bar_title(complete_seed_count(rows)), fontsize=9)
 
     bar_ax.annotate(effect_caption(effects), xy=(0.5, -0.32), xycoords="axes fraction",
                     ha="center", fontsize=8)
