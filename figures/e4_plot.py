@@ -40,6 +40,16 @@ def missing_cells(rows: list[dict]) -> list[tuple[str, int, str]]:
     ]
 
 
+def incomplete_seed_positions(rows: list[dict]) -> list[tuple[int, float]]:
+    """미완성 seed마다 서로 다른 y 좌표를 배정한다.
+
+    Fix round 1, finding 1: 전부 같은 자리(0.02, 0.05)에 찍으면 seed가 둘 이상
+    미완성일 때 라벨이 겹쳐서 안 보인다. missing_cells 루프가 enumerate로 이미
+    피하는 문제를 여기서도 똑같이 피한다.
+    """
+    return [(seed, 0.05 + 0.06 * i) for i, seed in enumerate(incomplete_seeds(rows))]
+
+
 def plot_e4(runs_csv, curves_dir, out_path) -> Path:
     rows = _read(runs_csv)
     means = cell_means(rows)
@@ -83,8 +93,8 @@ def plot_e4(runs_csv, curves_dir, out_path) -> Path:
         bar_ax.annotate(f"{cell} seed{seed} {label}", xy=(0.02, 0.95 - 0.06 * i),
                         xycoords="axes fraction", color=colour, fontsize=7)
 
-    for seed in incomplete_seeds(rows):
-        bar_ax.annotate(f"seed {seed} incomplete", xy=(0.02, 0.05),
+    for seed, y in incomplete_seed_positions(rows):
+        bar_ax.annotate(f"seed {seed} incomplete", xy=(0.02, y),
                         xycoords="axes fraction", color="tab:gray", fontsize=7)
 
     out = Path(out_path)

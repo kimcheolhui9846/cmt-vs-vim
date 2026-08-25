@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from bench.env import snapshot
+from bench.memory import is_oom
 from bench.train import TrainConfig, train
 from data.tiny_imagenet import build_loaders, build_mixup, ensure_tiny_imagenet
 from experiments.e4_widths import (
@@ -60,6 +61,15 @@ def _seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def _status_for(exc: Exception) -> str:
+    """OOM은 error와 다른 지시다 — 배치를 줄이라는 뜻이지 코드를 고치라는 뜻이 아니다.
+
+    bench.memory.is_oom이 CUDA OOM의 두 형태(torch.cuda.OutOfMemoryError, 그리고
+    cuDNN workspace 할당 실패 등에서 새는 평범한 RuntimeError)를 모두 인정한다.
+    """
+    return "oom" if is_oom(exc) else "error"
 
 
 def _existing_rows(csv_path: Path) -> list[dict]:
@@ -120,7 +130,10 @@ def main(out_dir: str = "results/e4") -> None:
             # 도중에 Ctrl-C로 멈춘 것(KeyboardInterrupt)까지 이 run의 실패로
             # 기록하고 다음 run으로 넘어가 버린다. KeyboardInterrupt·SystemExit는
             # 여기를 지나쳐 그대로 올라가 job을 멈춘다.
-            row.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            row.update({
+                "status": _status_for(exc),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
 
         rows = [r for r in rows if not (r["cell"] == cell and int(r["seed"]) == seed)]
         rows.append(row)

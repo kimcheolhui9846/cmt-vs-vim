@@ -1,8 +1,11 @@
 """오케스트레이션의 순수 부분. 99시간짜리 실행을 다시 돌리지 않고 검증한다."""
 import csv
 
+import torch
+
 from experiments.e4_ablation import (
     RUN_COLUMNS,
+    _status_for,
     completed_runs,
     run_order,
     write_rows,
@@ -36,6 +39,19 @@ def test_completed_runs_skips_only_successful_rows(tmp_path):
 
 def test_completed_runs_on_missing_file_is_empty(tmp_path):
     assert completed_runs(tmp_path / "absent.csv") == set()
+
+
+def test_oom_shaped_exception_gets_oom_status():
+    """Fix round 1, finding 2: OOM은 error와 다른 지시다 — 배치를 줄이라는 뜻이지
+    코드를 고치라는 뜻이 아니다. bench.memory.is_oom이 인정하는 두 형태를 모두 잡는다.
+    """
+    assert _status_for(torch.cuda.OutOfMemoryError("CUDA out of memory.")) == "oom"
+    assert _status_for(RuntimeError("CUDA out of memory. Tried to allocate 2 GiB")) == "oom"
+
+
+def test_ordinary_exception_still_gets_error_status():
+    assert _status_for(ValueError("nan loss")) == "error"
+    assert _status_for(RuntimeError("some other runtime failure")) == "error"
 
 
 def test_write_rows_is_rewritten_every_call(tmp_path):
