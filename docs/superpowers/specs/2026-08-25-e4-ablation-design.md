@@ -133,10 +133,16 @@ RandAugment rand-m9-mstd0.5-inc1,  random erasing 0.25
 EMA 없음
 ```
 
-**한 곳만 DeiT 원 레시피에서 벗어난다.** `RandomResizedCrop`의 `scale`을
-`(0.08, 1.0)` → `(0.6, 1.0)`으로 올린다. 64px에서 8%까지 잘라내면 남는 것이 5×5
-픽셀이라 라벨이 무의미해진다. 네 칸에 동일 적용하므로 요인 비교에는 영향이 없고,
-변경 사실을 configs와 README에 남긴다.
+**DeiT 원 레시피에서 벗어나는 곳은 두 군데다.** 둘 다 네 칸에 동일 적용하므로
+요인 비교에는 영향이 없고, 변경 사실을 configs와 README에 남긴다.
+
+1. `RandomResizedCrop`의 `scale`을 `(0.08, 1.0)` → `(0.6, 1.0)`으로 올린다. 64px에서
+   8%까지 잘라내면 남는 것이 5×5 픽셀이라 라벨이 무의미해진다.
+2. weight decay 제외 집합이 DeiT와 완전히 같지는 않다. `bench/train.py`의
+   `param_groups`가 rank ≥ 2인 파라미터에만 decay를 걸어 bias와 norm 가중치는 DeiT와
+   같이 빠지지만, `pos_embed`와 `cls_token`은 rank 3이라 decay를 받는다(DeiT는
+   `no_weight_decay()`로 뺀다). 이름 기반 예외로 빼지 않는 이유는 그 두 파라미터가
+   A·B에만 있어 칸마다 다른 규칙이 되기 때문이다.
 
 EMA를 쓰지 않는 이유는 메모리·시간 비용이 네 칸에 비대칭으로 걸리기 때문이다.
 
@@ -256,7 +262,15 @@ CSV의 범주 값도 ASCII로 둔다. `error` 열과 Markdown 산문은 한글�
 4. 네 칸이 폭 조정 모델이므로 공표 수치와 직접 비교할 수 없다. C·D는 depth 분포도
    공표 설정과 다르다. 또한 C와 D는 파라미터를 맞추느라 폭이 서로 다르므로, D−C는
    "연산자 교체 + 폭 차이"이며 순수한 연산자 효과가 아니다.
-5. Tiny-ImageNet 결과를 ImageNet으로 외삽하지 않는다.
+5. **B→D 조작이 A→C 조작과 norm 종류·잔차 정밀도에서 다르다.** B(Vim-Ti)는
+   `rms_norm=True`, `fused_add_norm=True`, `residual_in_fp32=True`로 만들어지는데
+   (Vim은 fp16 안정성을 위해 `residual_in_fp32`를 쓴다), D는 C의 골격을 상속하므로
+   블록이 `nn.LayerNorm`을 쓰고 잔차가 fp16으로 흐른다. 즉 A→C는 LayerNorm →
+   LayerNorm인 반면 B→D는 RMSNorm + fp32 잔차 → LayerNorm + fp16 잔차다. "D는 C의
+   골격을 공유한다"는 설계에서 직접 나오는 제약이라 코드로 없앨 수 없고 — 없애면 D가
+   C의 골격을 벗어나 구조 요인 자체가 흐려진다 — 위 4번의 폭 차이와 같은 종류의
+   잔여 비대칭으로 논문에 적는다.
+6. Tiny-ImageNet 결과를 ImageNet으로 외삽하지 않는다.
 
 ## 범위 밖
 

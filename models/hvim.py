@@ -51,6 +51,15 @@ class HierarchicalVim(CMT):
 
     상속으로 짓는 이유는 stem·patch_embed·_fc·head를 C와 비트 단위로 같게 두기
     위해서다. 다시 구현하면 조용히 갈라진다.
+
+    **알려진 비대칭**: 그 상속 때문에 D의 블록은 CMT 골격의 `nn.LayerNorm`을 그대로
+    쓰고, 잔차는 fp16으로 흐른다. 반면 B(Vim-Ti)는 `rms_norm=True`,
+    `fused_add_norm=True`, `residual_in_fp32=True`로 만들어진다(Vim은 fp16 안정성을
+    위해 residual_in_fp32를 쓴다). 즉 A->C는 LayerNorm -> LayerNorm인데 B->D는
+    RMSNorm+fp32 잔차 -> LayerNorm+fp16 잔차다. 두 조작이 norm 종류와 잔차 정밀도에서
+    다르므로, 상호작용 항에 그 차이가 섞일 수 있다. "D는 C의 골격을 공유한다"는 설계
+    자체에서 나오는 제약이라 코드로 없앨 수 없고(없애려면 D가 C의 골격을 벗어난다),
+    설계 문서의 한계 목록에 폭 차이와 나란히 적어 둔다.
     """
 
     def __init__(self, img_size=64, num_classes=200, embed_dims=(52, 104, 208, 416),

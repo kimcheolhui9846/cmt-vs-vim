@@ -3,8 +3,6 @@
 관문이 헐거우면 관문이 아니다 — 여기서는 임계값과 판정 로직만 검증하고,
 실제 GPU 실행은 Task 7 Step 4에서 사람이 돌린다.
 """
-import pytest
-
 from experiments.e4_gate import GATE_THRESHOLD, gate_verdict, select_subset_indices
 
 IMAGES_PER_CLASS = 500  # Tiny-ImageNet train 분할의 클래스당 이미지 수
