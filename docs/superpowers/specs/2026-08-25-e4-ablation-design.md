@@ -133,16 +133,28 @@ RandAugment rand-m9-mstd0.5-inc1,  random erasing 0.25
 EMA 없음
 ```
 
-**DeiT 원 레시피에서 벗어나는 곳은 두 군데다.** 둘 다 네 칸에 동일 적용하므로
-요인 비교에는 영향이 없고, 변경 사실을 configs와 README에 남긴다.
+**upstream 레시피에서 벗어나는 곳은 두 군데다.** 변경 사실을 configs와 README에
+남긴다. 둘 중 하나만 네 칸에 완전히 중립이며, 나머지 하나가 어느 칸에 걸리는지를
+아래에 명시한다.
 
 1. `RandomResizedCrop`의 `scale`을 `(0.08, 1.0)` → `(0.6, 1.0)`으로 올린다. 64px에서
-   8%까지 잘라내면 남는 것이 5×5 픽셀이라 라벨이 무의미해진다.
-2. weight decay 제외 집합이 DeiT와 완전히 같지는 않다. `bench/train.py`의
-   `param_groups`가 rank ≥ 2인 파라미터에만 decay를 걸어 bias와 norm 가중치는 DeiT와
-   같이 빠지지만, `pos_embed`와 `cls_token`은 rank 3이라 decay를 받는다(DeiT는
-   `no_weight_decay()`로 뺀다). 이름 기반 예외로 빼지 않는 이유는 그 두 파라미터가
-   A·B에만 있어 칸마다 다른 규칙이 되기 때문이다.
+   8%까지 잘라내면 남는 것이 5×5 픽셀이라 라벨이 무의미해진다. 네 칸에 같은 변환이
+   걸리고 칸마다 다른 파라미터가 개입하지 않으므로 요인 비교에 남는 영향이 없다.
+2. B·D의 mamba `A_log`·`A_b_log`가 weight decay에서 빠진다. `bench/train.py`의
+   `param_groups`는 세 조건의 합집합(rank < 2, `model.no_weight_decay()`의 이름,
+   `param._no_weight_decay` 표식)을 네 칸에 글자 그대로 같은 규칙으로 적용한다.
+   그 결과 **A·C의 제외 집합은 DeiT 원 레시피와 정확히 같아진다** — DeiT·Vim의 원
+   스크립트가 쓰는 timm `create_optimizer` → `param_groups_weight_decay(model, wd,
+   model.no_weight_decay())`와 같은 분할이다. 남는 차이는 세 번째 조건이다: timm의
+   그 함수는 `_no_weight_decay` 표식을 보지 않아 `A_log`·`A_b_log`(rank 2)를
+   decay하지만, 이 저장소는 mamba upstream이 단 표식을 따라 뺀다
+   (`mamba_ssm/modules/mamba_simple.py`). `A = -exp(A_log)`이라 decay가 SSM의
+   시간상수를 미는 것을 막으려고 존재하는 표식이기 때문이다. 그런 파라미터는 B·D에만
+   있으므로 **이 한 가지는 연산자 주효과 축에만 걸리는 편차다**. 방향은 "SSM 쪽이
+   upstream 의도대로 정규화된다"이며, Vim 원 스크립트와 비교했을 때의 차이다.
+
+이전 판은 두 번째 편차를 "`pos_embed`·`cls_token`이 decay를 받는다(A·B에만 걸린다)"로
+적었다. `param_groups`가 `model.no_weight_decay()`를 읽게 되면서 그 편차는 사라졌다.
 
 EMA를 쓰지 않는 이유는 메모리·시간 비용이 네 칸에 비대칭으로 걸리기 때문이다.
 
