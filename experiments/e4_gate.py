@@ -32,7 +32,7 @@ import sys
 import torch
 import torch.nn as nn
 
-from bench.train import TrainConfig, lr_at, train_one_epoch
+from bench.train import TrainConfig, lr_at, param_groups, train_one_epoch
 from data.tiny_imagenet import (
     NUM_CLASSES,
     build_eval_transform,
@@ -81,8 +81,14 @@ def overfit_subset(cell: str, n: int = 200, steps: int = 300,
     model = build_e4_model(cell, load_cell_config(cell), num_classes=NUM_CLASSES,
                            img_size=64, drop_path=0.0).to(device).train()
     cfg = TrainConfig(epochs=steps, lr=1e-3, min_lr=1e-5, warmup_epochs=5,
-                      weight_decay=0.0, label_smoothing=0.0, drop_path=0.0)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+                      weight_decay=0.0, label_smoothing=0.0)
+    # optimizer를 본 학습(bench.train.train)과 같은 `param_groups`로 만든다.
+    # 이유가 둘이다. (1) `cfg.weight_decay = 0.0`을 정해 놓고 넘기지 않으면 AdamW의
+    # 기본값 0.01이 조용히 걸려, 관문이 "정규화를 껐다"고 적어 둔 것과 다른 것을
+    # 돌게 된다. (2) 이 관문은 99시간을 태우기 전 마지막 사람 점검이므로, 본 학습이
+    # 실제로 지나는 코드 경로를 지나야 한다 — 여기서 optimizer를 따로 세우면
+    # param_groups의 제외 규칙은 관문에서 한 번도 실행되지 않는다.
+    optimizer = torch.optim.AdamW(param_groups(model, cfg.weight_decay), lr=cfg.lr)
     scaler = torch.cuda.amp.GradScaler()
     criterion = nn.CrossEntropyLoss()
 

@@ -19,13 +19,21 @@ CURVE_COLUMNS = ("epoch", "train_loss", "val_top1", "val_top5", "lr")
 
 @dataclass
 class TrainConfig:
+    """`train()`이 실제로 읽는 값만 둔다.
+
+    `drop_path`는 여기 있었지만 이 파일 어디에서도 읽히지 않았다. 모델을 세우는
+    것은 `models.registry.build_e4_model`이고 오케스트레이터가 `common["drop_path"]`를
+    거기로 직접 넘긴다. 읽히지 않는 필드를 들고 있으면 이 값을 고치면 무언가
+    달라진다고 읽히는데 실제로는 조용한 no-op이다 — configs 배선에서 방금 고친 것과
+    같은 함정이 한 층 아래에 있던 것이다.
+    """
+
     epochs: int
     lr: float
     min_lr: float
     warmup_epochs: int
     weight_decay: float
     label_smoothing: float
-    drop_path: float
 
 
 def lr_at(epoch: int, cfg: TrainConfig) -> float:
@@ -53,28 +61,52 @@ def evaluate(model, loader, device) -> tuple[float, float]:
     return correct1 / total, correct5 / total
 
 
-def param_groups(model, weight_decay: float) -> list[dict]:
-    """weight decay를 rank >= 2인 파라미터에만 건다.
+def declared_no_decay(model) -> set[str]:
+    """모델이 스스로 no-decay라고 선언한 파라미터 이름.
 
-    DeiT 원 레시피는 bias와 norm 가중치를 weight decay에서 뺀다. 파라미터 그룹 없이
-    `AdamW(model.parameters(), weight_decay=0.05)`로 두면 norm의 gamma·beta와 모든
-    bias까지 0으로 끌려가, 코드가 문서에 적힌 레시피와 다른 것을 돌게 된다.
-
-    네 칸에 같은 규칙으로 걸리므로 요인 대비에는 영향이 없다. rank로 가르는 이유는
-    프레임워크를 가리지 않기 때문이다 — 이름 규칙(`.bias`, `norm.`)은 timm·
-    VisionMamba·CMT가 서로 다르지만, "행렬이면 decay, 벡터/스칼라면 no-decay"는
-    셋 모두에서 같은 집합을 고른다.
-
-    남는 편차: `pos_embed`·`cls_token`은 rank 3이라 이 규칙에서 decay를 받는다.
-    DeiT는 둘을 `no_weight_decay()`로 빼므로 여기가 원 레시피와 다르다. 이름 기반
-    예외로 빼지 않는 이유는 그 두 파라미터가 A·B에만 있어 칸마다 다른 규칙이
-    되기 때문이다. configs와 설계 문서에 편차로 적어 둔다.
+    `no_weight_decay()`는 timm ViT·VisionMamba·CMT가 모두 제공하는 규약이고,
+    upstream 학습 스크립트(DeiT·Vim 모두 timm의 `create_optimizer`)가 실제로 읽는
+    것도 이 메서드다. 없는 모델도 죽지 않아야 한다 — 테스트의 `nn.Sequential`처럼
+    이 규약을 모르는 모델이 이 함수를 지난다.
     """
+    fn = getattr(model, "no_weight_decay", None)
+    return set(fn()) if callable(fn) else set()
+
+
+def param_groups(model, weight_decay: float) -> list[dict]:
+    """weight decay 제외 집합을 세 조건의 합집합으로 정한다.
+
+    제외 조건은 네 칸에 **글자 그대로 같은 규칙**으로 걸린다.
+      1. `param.ndim < 2` — bias와 norm 가중치. DeiT 원 레시피가 빼는 집합이다.
+      2. 이름이 `model.no_weight_decay()`에 있는 것 — A·B의 `pos_embed`·
+         `cls_token`. C·D는 이 메서드가 같은 이름을 돌려주지만 그런 파라미터가
+         아예 없어 공집합이 된다(즉 규칙은 하나, 적용 결과만 칸마다 다르다).
+      3. `param._no_weight_decay`가 True인 것 — mamba가 `A_log`·`A_b_log`에 다는
+         upstream 표식(mamba_ssm/modules/mamba_simple.py). B·D에만 존재한다.
+
+    1번만 쓰던 이전 규칙은 "규칙은 하나"였지만 **적용 결과가 요인축과 나란히**
+    갈렸다. `pos_embed`·`cls_token`은 rank 3이라 decay를 받았고 그 둘은 A·B에만
+    있으므로, 추가 정규화가 평면 행(예측 1의 대비)에만 걸렸다. `A_log`는 rank 2라
+    decay를 받았고 `A = -exp(A_log)`이므로 그 decay가 SSM의 시간상수를 밀었다 —
+    B·D, 즉 연산자 주효과에만 걸리는 교란이다. upstream이 표식을 다는 이유가
+    바로 그것이다.
+
+    합집합 규칙은 A·C에서 timm `param_groups_weight_decay(model,
+    no_weight_decay_list=model.no_weight_decay())`와 같은 분할을 낸다 — 즉 DeiT
+    원 레시피 그대로다. B·D에서는 3번 때문에 `A_log`·`A_b_log`가 더 빠지며, 이
+    한 가지가 Vim 원 스크립트와 남는 차이다(설계 문서의 편차 목록 참조).
+    """
+    declared = declared_no_decay(model)
     decay, no_decay = [], []
-    for param in model.parameters():
+    for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        (decay if param.ndim >= 2 else no_decay).append(param)
+        excluded = (
+            param.ndim < 2
+            or name in declared
+            or getattr(param, "_no_weight_decay", False)
+        )
+        (no_decay if excluded else decay).append(param)
     return [
         {"params": decay, "weight_decay": weight_decay},
         {"params": no_decay, "weight_decay": 0.0},

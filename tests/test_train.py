@@ -4,6 +4,7 @@ lr 스케줄을 순수 함수로 뺀 이유가 여기 있다 — 재개가 스�
 optimizer 내부를 뒤지지 않고 직접 확인할 수 있다.
 """
 import csv
+import functools
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ import torch.nn as nn
 from bench.train import (
     TrainConfig,
     _append_curve,
+    declared_no_decay,
     evaluate,
     load_checkpoint,
     lr_at,
@@ -20,9 +22,10 @@ from bench.train import (
     save_checkpoint,
     train,
 )
+from models.registry import E4_CELLS
 
 CFG = TrainConfig(epochs=300, lr=2.5e-4, min_lr=1e-5, warmup_epochs=5,
-                  weight_decay=0.05, label_smoothing=0.1, drop_path=0.1)
+                  weight_decay=0.05, label_smoothing=0.1)
 
 
 def test_warmup_starts_near_zero_and_reaches_base_lr():
@@ -148,7 +151,7 @@ def test_fresh_run_does_not_duplicate_curve_rows(tmp_path):
     ys = torch.randint(0, 3, (4,))
     loader = [(xs, ys)]
     cfg = TrainConfig(epochs=2, lr=1e-3, min_lr=1e-4, warmup_epochs=1,
-                      weight_decay=0.0, label_smoothing=0.0, drop_path=0.0)
+                      weight_decay=0.0, label_smoothing=0.0)
 
     train(model, loader, loader, cfg, ckpt_path, curve_path, device="cuda")
 
@@ -186,7 +189,7 @@ def test_evaluate_returns_top1_and_top5_as_fractions():
 
 def _tiny_cfg(epochs: int) -> TrainConfig:
     return TrainConfig(epochs=epochs, lr=1e-3, min_lr=1e-4, warmup_epochs=1,
-                       weight_decay=0.05, label_smoothing=0.0, drop_path=0.0)
+                       weight_decay=0.05, label_smoothing=0.0)
 
 
 def _one_third_loader():
@@ -338,3 +341,112 @@ def test_train_builds_the_optimizer_with_two_decay_groups(tmp_path, monkeypatch)
         "weight decay가 걸린다"
     )
     assert [group["weight_decay"] for group in groups] == [0.05, 0.0]
+
+
+def test_param_groups_survives_a_model_without_no_weight_decay():
+    """`no_weight_decay()`가 없는 모델도 지나가야 한다 — 규약을 모르는 모델이 있다."""
+    model = nn.Sequential(nn.Linear(4, 3), nn.LayerNorm(3))
+    assert not hasattr(model, "no_weight_decay")
+    assert declared_no_decay(model) == set()
+    groups = param_groups(model, weight_decay=0.05)
+    assert len(groups[0]["params"]) == 1  # Linear.weight만 decay
+
+
+def test_param_groups_honours_the_no_weight_decay_marker():
+    """`param._no_weight_decay = True`인 rank 2 파라미터는 decay를 받지 않는다.
+
+    mamba가 `A_log`·`A_b_log`에 다는 표식이다(mamba_ssm/modules/mamba_simple.py).
+    rank만 보는 규칙은 이 표식을 무시하고 두 파라미터를 decay하는데, A = -exp(A_log)
+    이므로 그 decay가 SSM의 시간상수를 민다. 표식이 존재하는 이유가 바로 그것이다.
+    """
+    model = nn.Linear(4, 3)
+    model.weight._no_weight_decay = True
+    groups = param_groups(model, weight_decay=0.05)
+    assert groups[0]["params"] == []
+    assert id(model.weight) in {id(p) for p in groups[1]["params"]}
+
+
+@functools.lru_cache(maxsize=None)
+def _cell_model(cell: str):
+    from experiments.e4_widths import load_cell_config
+    from models.registry import build_e4_model
+
+    return build_e4_model(cell, load_cell_config(cell), num_classes=200, img_size=64)
+
+
+def _split(model, weight_decay: float = 0.05):
+    groups = param_groups(model, weight_decay)
+    assert [group["weight_decay"] for group in groups] == [weight_decay, 0.0]
+    return {id(p) for p in groups[0]["params"]}, {id(p) for p in groups[1]["params"]}
+
+
+@pytest.mark.parametrize("cell", E4_CELLS)
+def test_every_cell_excludes_vectors_and_declared_names(cell):
+    """네 칸 모두에서 norm 가중치·bias와 모델이 스스로 선언한 이름이 no-decay다.
+
+    rank만 보던 이전 규칙은 규칙 문구는 하나였지만 적용 결과가 요인축과 나란히
+    갈렸다. `pos_embed`·`cls_token`은 rank 3이라 decay를 받았고 그 둘은 A·B에만
+    있으므로, 추가 정규화가 평면 행(사전 등록 예측 1번의 대비)에만 걸렸다.
+    """
+    model = _cell_model(cell)
+    decayed, undecayed = _split(model)
+    declared = set(model.no_weight_decay())
+
+    seen_declared = []
+    for name, param in model.named_parameters():
+        if param.ndim < 2:
+            assert id(param) in undecayed, f"{cell}: rank<2인 {name}이 decay를 받는다"
+        if name in declared:
+            seen_declared.append(name)
+            assert id(param) in undecayed, (
+                f"{cell}: 모델이 no_weight_decay()로 선언한 {name}이 decay를 받는다"
+            )
+
+    if cell in ("a_deit_ti", "b_vim_ti"):
+        # 이 단언이 없으면 C·D에서 declared가 공집합이라 위 루프가 공회전한다
+        assert sorted(seen_declared) == ["cls_token", "pos_embed"]
+    else:
+        assert seen_declared == []  # 계층 칸에는 그런 파라미터가 아예 없다
+
+    # 어느 파라미터도 빠지거나 두 번 세지지 않는다
+    assert len(decayed) + len(undecayed) == len(list(model.parameters()))
+    assert decayed, f"{cell}: decay 그룹이 비었다"
+
+
+@pytest.mark.parametrize("cell", ("b_vim_ti", "d_hvim"))
+def test_ssm_cells_exclude_the_mamba_time_constants(cell):
+    """B·D의 `A_log`·`A_b_log`는 rank 2지만 decay를 받으면 안 된다."""
+    model = _cell_model(cell)
+    _, undecayed = _split(model)
+
+    names = [
+        name for name, param in model.named_parameters()
+        if name.endswith(("A_log", "A_b_log"))
+    ]
+    assert names, f"{cell}: A_log가 하나도 없다 — 모델이 bimamba가 아니다"
+    for name, param in model.named_parameters():
+        if name in names:
+            assert param.ndim >= 2  # rank 규칙만으로는 절대 걸리지 않는 것들이다
+            assert id(param) in undecayed, f"{cell}: {name}이 decay를 받는다"
+
+
+@pytest.mark.parametrize("cell", ("a_deit_ti", "c_cmt_ti"))
+def test_attention_cells_match_the_upstream_deit_grouping(cell):
+    """A·C의 제외 집합은 DeiT·Vim 원 스크립트가 쓰는 timm의 분할과 같아야 한다.
+
+    configs와 설계 문서가 "A·C는 DeiT 원 레시피 그대로"라고 적는 근거가 이 테스트다.
+    upstream은 timm의 `create_optimizer` -> `param_groups_weight_decay(model, wd,
+    model.no_weight_decay())`를 지난다.
+    """
+    from timm.optim.optim_factory import param_groups_weight_decay
+
+    model = _cell_model(cell)
+    decayed, undecayed = _split(model)
+
+    upstream = param_groups_weight_decay(model, 0.05, model.no_weight_decay())
+    upstream_no_decay = {id(p) for group in upstream for p in group["params"]
+                         if group["weight_decay"] == 0.0}
+    upstream_decay = {id(p) for group in upstream for p in group["params"]
+                      if group["weight_decay"] == 0.05}
+    assert undecayed == upstream_no_decay
+    assert decayed == upstream_decay

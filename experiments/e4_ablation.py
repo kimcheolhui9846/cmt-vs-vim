@@ -100,7 +100,7 @@ def main(out_dir: str = "results/e4") -> None:
     cfg = TrainConfig(
         epochs=common["epochs"], lr=common["lr"], min_lr=common["min_lr"],
         warmup_epochs=common["warmup_epochs"], weight_decay=common["weight_decay"],
-        label_smoothing=common["label_smoothing"], drop_path=common["drop_path"],
+        label_smoothing=common["label_smoothing"],
     )
     root = ensure_tiny_imagenet()
     runs_csv = out / "runs.csv"
