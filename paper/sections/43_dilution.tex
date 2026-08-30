@@ -1,0 +1,98 @@
+\section{Dilution: a correct argument about normalisation, and the opposite measurement}
+\label{sec:dilution}
+
+The most-repeated qualitative argument for state space models in vision
+concerns large objects. Self-attention weights sum to one, so an object
+spanning $K$ tokens receives an average weight of $1/K$; the more of the
+image the object occupies, the more thinly the attention mass is spread over
+it. A state space model has no such constraint---each object token adds to
+the state as it is scanned---and is therefore said not to suffer the
+dilution.
+
+The argument about normalisation is correct. The conclusion drawn from it is
+not the one the data supports.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig3_dilution.pdf}
+  \caption{Object coverage by area, for pretrained and untrained weights.
+  What is plotted is the excess over the random baseline; raw precision@K
+  rises with object area for every model and is not interpretable on its
+  own.}
+  \label{fig:dilution}
+\end{figure}
+
+\input{generated/tab_e3_excess}
+
+\subsection{How this must be read, and how it is easy to misread}
+
+Raw precision@K \emph{rises} with object area for all three models. That is
+not evidence against dilution; it is arithmetic. As an object grows, so does
+$K$, and a random ranking would also place more of its mass inside the
+object. The random baseline rises faster than the models do, and the quantity
+that carries information is the excess over that baseline.
+
+A reader who quotes raw precision@K without the baseline will describe this
+experiment as saying the opposite of what it says. Table~\ref{tab:e3}
+therefore reports only the excess.
+
+One further caution: the six area bins hold different object instances drawn
+by stratified sampling, so the decline across bins is not a paired
+comparison. Differences between bins should not be read as a within-object
+trajectory.
+
+\subsection{The measurement}
+
+Vim-S has the lowest excess over baseline in every one of the six area bins.
+Not at large object sizes only, where the dilution argument makes its
+prediction---everywhere.
+
+This is what makes the result scale-independent, and the distinction matters
+because our registered prediction concerned the \emph{slope}. Measured as a
+ratio, the excess of all three models falls by a similar factor from the
+smallest bin to the largest, which would say the models degrade alike.
+Measured as an absolute drop, Vim-S loses the least of the three, which is
+exactly the shape the prediction described---but only because it starts from
+the lowest value and so has the least to lose. The choice of scale produces
+the verdict, so we do not report one. We place the finding at the level
+instead, where no such choice is available: at every object size measured,
+the state space model puts less attribution on the object than either
+attention model.
+
+\subsection{Why the argument does not reach the conclusion}
+
+The dilution argument establishes that a state space model is free of a
+particular normalisation constraint. It does not establish that the model
+places more of its attribution on the object, and those are different claims.
+
+Two mechanisms stand in the way, and the earlier comparison we are auditing
+names the first of them itself, in a later section, without connecting it to
+this one: the recurrent state is a narrow channel of a few tens of
+dimensions. Absence of a normalisation constraint does not create capacity.
+If the state cannot hold the object's information, it does not matter that
+nothing is dividing that information by $K$.
+
+The second is the scan order. Under a row-major flattening the tokens of a
+two-dimensional object are not contiguous in the sequence; they are
+interleaved with background between row crossings. What the state
+accumulates as it passes over an object is therefore repeatedly interrupted
+by material the object does not contain.
+
+\subsection{An independent confirmation from a different measurement}
+
+If the scan order is implicated, then objects that are tall should fare worse
+than objects that are wide, since a tall object crosses more rows and is
+therefore more fragmented in the sequence. That is a prediction about a
+quantity we measured for another reason.
+
+It holds, and only for the state space model. The difference between tall and
+wide objects in precision@K is \DeitTallWide{} for DeiT-S ($z =
+\DeitTallWideZ{}$) and \CmtTallWide{} for CMT-S ($z = \CmtTallWideZ{}$),
+both indistinguishable from zero. For Vim-S it is \VimTallWide{} ($z =
+\VimTallWideZ{}$). Without training the gap widens to
+\VimTallWideRandom{} ($z = \VimTallWideRandomZ{}$).
+
+The direction, the isolation to one model, and the widening in the untrained
+condition all match what Section~\ref{sec:erf} measured about receptive field
+shape. Two experiments built for different purposes, using different data and
+different metrics, point at the same structural cause.

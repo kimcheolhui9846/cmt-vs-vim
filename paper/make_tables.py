@@ -351,6 +351,15 @@ def macros():
         _macro("VimTallWide", f"{tall_wide:+.4f}"),
         _macro("VimTallWideZ", f"{tall_wide_z:+.2f}"),
     ]
+    # 종횡비 결과는 세 모델을 나란히 놓아야 뜻이 산다 - vim만 다르다는 것이
+    # 주장이므로 나머지 둘의 값도 논문에 실린다.
+    for model, suffix in (("deit_s", "Deit"), ("cmt_s", "Cmt")):
+        diff, z = _e3_tall_wide(model=model)
+        lines.append(_macro(f"{suffix}TallWide", f"{diff:+.4f}"))
+        lines.append(_macro(f"{suffix}TallWideZ", f"{z:+.2f}"))
+    diff, z = _e3_tall_wide(condition="random_init")
+    lines.append(_macro("VimTallWideRandom", f"{diff:+.4f}"))
+    lines.append(_macro("VimTallWideRandomZ", f"{z:+.2f}"))
     env = shared_environment()
     lines += [
         _macro("PyVersion", env["python"]),
