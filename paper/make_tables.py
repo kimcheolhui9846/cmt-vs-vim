@@ -215,26 +215,54 @@ RUN_A_COMMIT = "fa35e51"
 RUN_A_PATH = "results/e1/sweep.csv"
 
 
-def _run_a_rows():
-    """실행 A의 sweep.csv를 git에서 꺼내 읽는다.
+def _rows_at_commit(commit, path):
+    """어느 커밋 시점의 CSV를 읽는다.
 
-    파일로 중복 커밋하지 않는 이유는 이미 이력 안에 있기 때문이다. 해시를
-    박아 두었으므로 결과는 결정적이다.
+    실행 **사이**의 변동은 옛 판과 대조해야만 나온다. 파일로 중복 커밋하지
+    않는 이유는 이미 이력 안에 있기 때문이고, 해시를 박아 두었으므로 결과는
+    결정적이다.
     """
     import io as _io
     import subprocess
 
     try:
         blob = subprocess.run(
-            ["git", "show", f"{RUN_A_COMMIT}:{RUN_A_PATH}"],
+            ["git", "show", f"{commit}:{path}"],
             check=True, capture_output=True, text=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError(
-            f"{RUN_A_COMMIT}:{RUN_A_PATH}를 꺼내지 못했다. 이 저장소의 "
-            f"이력이 있어야 실행 사이 변동을 계산할 수 있다."
+            f"{commit}:{path}를 꺼내지 못했다. 이 저장소의 이력이 있어야 "
+            f"실행 사이 변동을 계산할 수 있다."
         ) from exc
     return list(csv.DictReader(_io.StringIO(blob)))
+
+
+def _run_a_rows():
+    return _rows_at_commit(RUN_A_COMMIT, RUN_A_PATH)
+
+
+# E2도 두 번 돌았다. 이 커밋의 판은 서로 다른 이미지 집합을 썼고 N=256까지만
+# 갔다. 두 실행을 비교할 때는 **같은 N에서** 비교해야 한다 - 표본 크기가 다른
+# 두 값을 나란히 놓으면 표본 효과가 실행 간 변동으로 읽힌다.
+ERF_RUN_A_COMMIT = "d9b45a2"
+ERF_RUN_A_PATH = "results/e2/erf_metrics.csv"
+ERF_COMPARE_N = "256"
+
+
+def between_run_decay_drift(model="vim_s", condition="natural"):
+    """두 독립 E2 실행 사이의 감쇠비 차이(%). 같은 N에서 잰다."""
+    def pick(rows):
+        for row in rows:
+            if (row["model"] == model and row["condition"] == condition
+                    and row["n_images"] == ERF_COMPARE_N):
+                return float(row["decay_ratio"])
+        raise ValueError(
+            f"{model}/{condition}/N={ERF_COMPARE_N} 행이 없다")
+
+    old_value = pick(_rows_at_commit(ERF_RUN_A_COMMIT, ERF_RUN_A_PATH))
+    new_value = pick(_read(RESULTS / "e2" / "erf_metrics.csv"))
+    return abs(old_value - new_value) / old_value * 100.0
 
 
 def between_run_latency_spread():
@@ -311,6 +339,7 @@ def macros():
         _macro("DeitMaxBatchHigh", e1[("deit_s", "1024")]["max_batch"].split(".")[0]),
         _macro("LatencySpreadHigh", f"{_latency_spread():.2f}"),
         _macro("LatencyBetweenRunSpread", f"{between_run_latency_spread()[0]:.2f}"),
+        _macro("VimDecayRunDrift", f"{between_run_decay_drift():.2f}"),
         _macro("VimAnisoRandom",
                f"{float(e2[('vim_s', 'random_init')]['anisotropy']):.3f}"),
         _macro("VimAngleRandom",

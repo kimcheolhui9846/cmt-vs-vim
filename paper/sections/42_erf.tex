@@ -1,0 +1,76 @@
+\section{Receptive fields: the anisotropy is real, structural, and invisible to the obvious metric}
+\label{sec:erf}
+
+A state space backbone reads an image as a one-dimensional sequence. Under a
+row-major flattening two vertically adjacent pixels are separated in that
+sequence by the width of the token grid, while two horizontally adjacent
+pixels are neighbours. The effective receptive field should therefore be
+elongated along the scan direction. This is asserted in the comparison
+literature, including in our own earlier version, without measurement.
+
+The claim turns out to be true, false, and true again depending on how it is
+measured, and the resolution of that is the useful result.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig2_erf.pdf}
+  \caption{Effective receptive fields. Columns are input conditions and the
+  rightmost panel of each row shows how the two metrics converge with the
+  number of images averaged. The untrained Vim-S field is visibly elongated;
+  the trained one is not obviously so, and the covariance index does not
+  register the difference.}
+  \label{fig:erf}
+\end{figure}
+
+\input{generated/tab_e2_erf}
+
+\subsection{The covariance index separates nothing}
+
+The natural way to quantify elongation is the ratio of the principal axes of
+the second-moment matrix of the field. Table~\ref{tab:e2} reports it, and on
+natural images all three models sit close to unity. On this metric the three
+architectures are not distinguishable, and the claim as usually stated is not
+supported.
+
+The metric is at fault rather than the claim. A second moment weights each
+point by the square of its distance from the centre, so the value is
+dominated by the broad and nearly isotropic skirt of the field rather than by
+its core. Whatever the scan does to the shape near the peak is averaged away
+by a large amount of nearly circular background.
+
+\subsection{An axis-wise decay ratio does separate them}
+
+Measuring instead the ratio of vertical to horizontal decay slopes in the
+neighbourhood of the peak, Vim-S sits at \VimDecayNatural{} while the two
+attention models sit near unity---a separation of roughly thirty percent.
+
+That separation is an order of magnitude larger than the measurement
+uncertainty. The experiment was run twice over different image sets, and
+comparing the two at the same sample size the Vim-S decay ratio moves by
+\VimDecayRunDrift{} percent. The gap being claimed is ten times the drift
+that reproduces it.
+
+The difference between CMT-S and DeiT-S on this metric is inside that
+uncertainty, and we do not claim an ordering between them.
+
+\subsection{The clearest evidence comes from a model that has learned nothing}
+
+Take Vim-S with random weights and no training at all. Its receptive field
+has an anisotropy index of \VimAnisoRandom{}---an axis ratio close to two to
+one---and the principal axis of that ellipse lies within
+\VimAngleRandom{} degrees of the horizontal. The decay ratio in the same
+condition is \VimDecayRandom{}, larger than in the trained model. Both hold
+across two runs with different random initialisations and at every sample
+size from sixteen images to five hundred and twelve.
+
+This is the claim measured literally, and it locates the cause. The
+anisotropy is not something the network learns; it is imposed by the
+row-major flattening and the exponential state decay along the sequence, and
+it is present before any gradient has been applied. Training does not create
+the effect. Training partially cancels it, which is why the trained decay
+ratio is the smaller of the two and why the covariance index---already the
+least sensitive of the three measurements---finds nothing left to see.
+
+An untrained network is usually a control. Here it is the condition in which
+the phenomenon is largest, because it is the condition in which nothing has
+had a chance to compensate for it.
