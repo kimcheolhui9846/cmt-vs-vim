@@ -51,7 +51,7 @@ output, and parameter projections of that order, and once they are included
 the fifty-fold gap becomes a two-fold one.
 
 There is a second reason to distrust the common way of producing these
-numbers, and it points the same direction. Automatic FLOP counters attribute
+numbers, and it points the same direction. Automatic FLOP counters~\citep{fvcore} attribute
 zero cost to fused kernels they cannot trace into. In this repository that
 happened twice: a fused attention kernel swallowed the attention matrix
 multiplications of DeiT, and a fused selective-scan kernel swallowed the

@@ -1,0 +1,85 @@
+\section{Introduction}
+\label{sec:intro}
+
+Comparisons between CNN--transformer hybrids and state space vision backbones
+are made quantitatively. They are made with cross-over points, ratios of
+floating-point operations, throughput multiples, memory reductions, and
+component-wise decompositions of an accuracy gap. The numbers are specific,
+and specificity is what makes them useful to a reader deciding which family
+to build on.
+
+Most of them are not measured by the text that uses them. Some are values
+reported in the original papers, quoted into a setting the original authors
+did not measure. Others are assertions about mechanism---about what a
+one-dimensional scan does to a receptive field, or about what the absence of
+a normalisation constraint does to large objects---that read as though a
+measurement stands behind them, and none does. Our own earlier comparison of
+these two architectures made two claims of the second kind.\footnote{An
+earlier and shorter version of this comparison appeared as ``An In-Depth
+Comparative Analysis of CMT and Vision Mamba'' (in Korean), paper GEP-0563,
+2026 IEIE Summer Conference, poster P4-44. The present paper shares its
+subject but none of its text, and reports measurements that did not exist at
+that time.}
+
+This paper takes six such claims and measures each of them. The environment
+is pinned and enforced, every number in the manuscript is generated from
+committed data, and every prediction was registered before the measurement
+that tested it. Table~\ref{tab:verdicts} gives the outcome.
+
+\begin{table}[t]
+  \centering
+  \caption{The six claims and what measurement said about each. ``Reported''
+  marks a value published by the original authors and quoted onward;
+  ``asserted'' marks a claim about mechanism made in comparison writing,
+  including our own.}
+  \label{tab:verdicts}
+  \small
+  % 열 너비는 소수 한 자리로 쓴다. test_paper_prose가 소수 두 자리 이상을
+  % 손으로 쓴 측정값으로 보고 잡기 때문이다.
+  \begin{tabular}{@{}p{0.4\linewidth}p{0.2\linewidth}p{0.3\linewidth}@{}}
+    \toprule
+    Claim & Source & Verdict \tabularnewline
+    \midrule
+    A cross-over exists past which the scan is cheaper than attention, at a
+      token count near twice the channel width
+      & Derived & \textbf{Confirmed}, in the predicted interval, on whole
+      measured models \tabularnewline
+    Past that point the state space model is cheaper by more than an order
+      of magnitude
+      & Reported & \textbf{Overstated}: measured end to end the ratio is
+      about two \tabularnewline
+    At high resolution the state space model is several times faster and uses
+      a fraction of the memory
+      & Reported & \textbf{Not reproduced} under our conditions; memory is
+      reversed at batch size one \tabularnewline
+    The scan makes the effective receptive field anisotropic along the scan
+      direction
+      & Asserted & \textbf{Confirmed on one metric of three}, and the effect
+      is structural, not learned \tabularnewline
+    Freedom from softmax normalisation favours large objects
+      & Asserted & \textbf{Contradicted}: the state space model is lowest at
+      every object size \tabularnewline
+    The accuracy gap decomposes as the hybrid's own ablation table says
+      & Reported & \textbf{Replaced} by a factorial measurement; the
+      direction survives, the decomposition does not transfer \tabularnewline
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Four of the six do not hold in the form they circulate in. That could be
+reported as a list of corrections, and it would be the least interesting
+thing to do with it. In three of the four the argument behind the claim is
+sound and the number beside it is about something else---a kernel rather than
+a block, a skirt rather than a core, a normalisation rather than a capacity.
+Section~\ref{sec:discussion} makes that pattern explicit, because it is the
+part that outlives the two architectures.
+
+\paragraph{Contributions.} We re-measure six circulating quantitative claims
+in one pinned environment and adjudicate each, separating what the original
+papers reported from what comparison writing asserted. We build a
+hierarchical state space backbone so that structure and token-mixing operator
+can be crossed in a $2\times2$ factorial design, replacing an ablation table
+transferred from one architecture to a comparison between two. And we make
+the manuscript's numbers mechanically traceable: tables and in-line
+quantities are generated from committed measurement files, and a test fails
+the build if a measurement is typed into the prose by hand.

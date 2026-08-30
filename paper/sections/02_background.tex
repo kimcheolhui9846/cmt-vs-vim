@@ -1,0 +1,93 @@
+\section{Background}
+\label{sec:background}
+
+\subsection{A hierarchical hybrid}
+
+CMT~\citep{guo2022cmt} keeps the four-stage pyramid of convolutional
+backbones and puts attention inside it. A stem of three $3\times3$
+convolutions, the first strided, reduces the input before any token exists;
+each of the four stages then begins with a strided convolution that halves
+the spatial resolution and widens the channels, so the token count falls by
+four from stage to stage. In the configuration we use the four stages hold
+$2$, $2$, $10$, and $2$ blocks.
+
+A block has three parts. A local perception unit adds a depthwise $3\times3$
+convolution with a residual connection, giving each token access to its
+spatial neighbours without attention. A lightweight multi-head self-attention
+follows, in which keys and values are first spatially reduced by a depthwise
+strided convolution---by factors of $8$, $4$, $2$, and $1$ in the four
+stages---so that early stages, where tokens are numerous, do not pay the full
+quadratic cost. A learned relative position bias is added to the attention
+logits. The block closes with an inverted-residual feed-forward network: a
+pointwise expansion, a depthwise $3\times3$ convolution, and a pointwise
+projection.
+
+One consequence of the relative position bias matters later. Its table is
+sized by the token grid and by the reduced grid it attends to, so it grows
+with the square of the token count rather than staying fixed, which makes the
+model's parameter count a function of input resolution.
+
+\subsection{A flat state space backbone}
+
+Vision Mamba~\citep{zhu2024vim} keeps the flat layout of a plain vision
+transformer---one patch embedding, one resolution throughout, learned
+absolute position embeddings, a class token placed in the middle of the
+sequence---and replaces self-attention with a selective state space
+scan~\citep{gu2023mamba}.
+
+The scan carries a hidden state of width $N$ along the sequence, updating it
+at each token by a discretised linear recurrence. Its continuous parameters
+are discretised by zero-order hold with a step size that is itself produced
+from the input, so the state transition is input dependent rather than fixed:
+the model can decide, per token, how much of the state to retain. Around the
+scan the block has an input projection that expands the channel width, a
+short depthwise convolution along the sequence, the projections that produce
+the input-dependent parameters, and an output projection. In the
+configuration we use the state width is $16$ and the scan is run in both
+directions over the sequence with separate weights, which is what makes the
+backbone usable for images, where nothing distinguishes one end of the
+sequence from the other.
+
+Because the layout is flat, an image reaches the scan as a row-major
+flattening of the token grid. Two horizontally adjacent tokens are
+neighbours in the sequence; two vertically adjacent tokens are separated by
+the width of the grid. Later hierarchical state space
+backbones~\citep{liu2024vmamba,huang2024localmamba} address this with
+multi-directional or windowed scans, and we return in
+Section~\ref{sec:factorial} to why our factorial design deliberately does
+not.
+
+As the flat attention counterpart we use DeiT~\citep{touvron2021deit}, which
+is the baseline the state space backbone's own authors compare against.
+
+\subsection{Where the six claims come from}
+
+The claims we examine are of two kinds, and the difference decides what a
+failure to reproduce means.
+
+Three are values published by the original authors. The cost of a block is
+compared analytically: self-attention needs $2M^2d$ operations for the
+attention matrices and about $4Md^2$ for its projections, while a scan needs
+$8MDN$ per direction, linear in the token count $M$. Setting the quadratic
+term against the linear ones puts a cross-over near $M \approx 2d$, and a
+table of block costs at a large token count reports a ratio of more than an
+order of magnitude past it. Separately, the state space backbone's authors
+report a throughput advantage of $2.8\times$ and a memory reduction of
+$86.8\%$ at an input resolution of $1248^2$ on their hardware. And the
+hybrid's own paper reports an ablation table attributing its accuracy to the
+hierarchy, the convolutional stem, the local perception unit, and the
+inverted-residual network.
+
+Three are assertions about mechanism, made in comparison writing rather than
+measured: that the scan direction leaves an anisotropic imprint on the
+effective receptive field; that a model without softmax normalisation escapes
+the dilution of attention weight over a large object and therefore favours
+large objects; and that the hybrid's component-wise ablation explains the
+accuracy gap between the two families, which requires the ablation to
+transfer across a change of token-mixing operator. Two of the three appear in
+our own earlier version of this comparison.
+
+Quoting a reported value into new conditions and asserting a mechanism
+without measuring it fail differently. We treat the first as a limit on the
+range over which a reported result has been shown to hold, and the second as
+a claim we are entitled to test directly.
