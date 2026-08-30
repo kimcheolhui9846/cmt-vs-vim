@@ -39,15 +39,16 @@ D칸이 Hierarchical Vim이며 논문 결론부가 예고한 향후 연구가 �
 
 - 테스트: **268건 전부 통과** (고정 환경 기준. Windows에서는 `mamba_ssm`이 없어
   `tests/test_vim.py`가 수집 단계에서 실패한다 — 정상이다)
-- **E1·E2·E3 세 실험 모두 측정까지 완료**됐고, **PR 스택은 전부 `main`에
-  병합됐다.** 이제 `main`이 세 실험의 코드·결과·문서를 전부 담고 있다.
+- **E1·E2·E3·E4 네 실험 모두 측정까지 완료**됐고, **PR은 전부 `main`에
+  병합됐다.** 이제 `main`이 네 실험의 코드·결과·문서를 전부 담고 있다.
 
 | 브랜치 | PR | 병합 커밋 |
 |--------|----|-----------|
 | `feat/e1-resolution-sweep` | #1 | `a0b5beb` |
 | `feat/e2-erf` | #2 | `2b8f630` |
 | `feat/e3-dilution` | #3 | `e23153e` |
-| `chore/portable-pinned-env` | #4 | 이 PR |
+| `chore/portable-pinned-env` | #4 | `8666a2a` |
+| `feat/e4-ablation` | #5 | `e39aefd` |
 
 스택이었으므로 아래에서 위로 병합했고, **merge commit으로 병합했다** — squash로
 뭉개면 위쪽 PR의 diff에 아래 PR의 작업이 중복으로 뜨고, 이 저장소는 커밋 이력
