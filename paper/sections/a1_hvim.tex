@@ -1,0 +1,67 @@
+\section{The hierarchical state space cell}
+\label{app:hvim}
+
+Cell D exists to make $B \to D$ and $A \to C$ the same manipulation. This
+appendix records what was and was not changed, because a factorial design is
+only as good as the equality of its two arms.
+
+\subsection{Construction}
+
+D subclasses the hierarchical attention model rather than reimplementing it,
+so the stem, the patch embeddings, the pooling, and the classifier head are
+literally the same code. Only the blocks are replaced.
+
+A block differs from the attention block in one line. Where the attention
+block applies its attention to the normalised sequence, D applies a
+bidirectional selective scan to it. The local perception unit---a depthwise
+$3\times3$ convolution with a residual---and the inverted-residual
+feed-forward network are untouched, as is the stochastic-depth schedule,
+which follows the same linear ramp over the total block count.
+
+The mixer is bidirectional, matching cell B. A four-directional scan would
+have made $B \to D$ change the number of scan directions in addition to the
+structure, and the interaction term would then contain a scan-direction
+effect with no way to separate it.
+
+\subsection{Two things that had to be undone}
+
+Replacing the blocks after construction leaves two traces, and both were
+found by inspection rather than by a failing test.
+
+The relative position parameters of the attention blocks survive the
+replacement as unused tensors. Left in place they consume parameter budget
+without ever receiving a gradient, which would make the claim that all four
+cells sit inside the budget false while every number still looked right.
+They are deleted.
+
+The convolutions inside the new blocks miss the model's own weight
+initialisation, because that initialisation runs during the parent
+constructor---before the blocks are swapped---and so leaves the new
+convolutions at the framework default. The initialisation is reapplied,
+scoped to the local perception unit and the feed-forward network only. The
+mixer is deliberately excluded: it carries its own initialisation for the
+timescale projection, and applying a convolutional scheme over it destroys
+that.
+
+\subsection{Weight decay}
+
+Parameters are excluded from weight decay by the union of three conditions:
+rank below two, membership in the model's own declared no-decay set, and an
+upstream marker attached to the parameter. The same rule is applied verbatim
+to all four cells.
+
+For the two attention cells this reproduces the reference recipe exactly.
+The difference is in the third condition. The reference implementation's
+grouping helper does not consult that marker, so it decays the state
+transition parameters of a Mamba block; we do not, because the marker exists
+upstream to stop weight decay from dragging the learned timescales, the state
+transition being an exponential of those parameters.
+
+Only the state space cells have such parameters, so the deviation lies mainly
+on the operator axis. It does not cancel exactly. If the same shift applied
+to B and D, it would vanish from the structure effect and the interaction and
+survive only in the operator effect; but the number of marked parameters
+differs between the two, because the flat cell has more blocks than the
+hierarchical one. A small residue can therefore reach the structure effect
+and the interaction. It is a residue, not a large term, and we say so rather
+than claiming exact cancellation.

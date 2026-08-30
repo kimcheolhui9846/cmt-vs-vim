@@ -1,0 +1,141 @@
+\section{Structure against operator: a factorial decomposition}
+\label{sec:factorial}
+
+The accuracy gap between a CNN--transformer hybrid and a flat state space
+backbone is usually decomposed by quoting the hybrid's own ablation table:
+so many points from the hierarchy, so many from the convolutional stem, and
+so on. That decomposition was measured on one architecture. Applying it to
+the gap between two architectures assumes that each component contributes the
+same amount when the token-mixing operator underneath it is different, and
+that assumption is precisely what a factorial design exists to test.
+
+\subsection{Design}
+
+We cross two factors. \emph{Structure} is flat versus hierarchical with
+convolutional locality; \emph{operator} is self-attention versus a
+bidirectional selective scan. The four cells are a flat attention model
+(A), a flat state space model (B), a hierarchical attention model (C), and a
+hierarchical state space model (D) that we built for this experiment.
+
+D is C with the operator swapped and nothing else: the attention call inside
+each block is replaced by a bidirectional Mamba mixer, while the local
+perception unit and the inverted-residual feed-forward network stay as they
+are, and the stem, patch embeddings, and classifier head are inherited
+rather than reimplemented. This is what makes the design a factorial one---
+$B \to D$ and $A \to C$ have to be the same manipulation, or the interaction
+term measures something other than what its name says. For the same reason
+we use a bidirectional scan rather than the four-directional scan of later
+hierarchical SSM backbones: four directions would make $B \to D$ change the
+number of scan directions as well as the structure.
+
+D is a controlled reimplementation for the purpose of factor separation, not
+a proposed architecture; hierarchical state space backbones already exist in
+the literature.
+
+All four cells are held to a parameter budget of \ParamBudget{}~M within
+\ParamTolerance{} percent, and all four land inside it. Training uses one recipe for all four cells,
+$300$ epochs, three seeds, on Tiny-ImageNet at $64 \times 64$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig4_factorial.pdf}
+  \caption{Cell means with standard deviation over three seeds, and the
+  validation curves of all twelve runs. The two hierarchical cells separate
+  from the two flat ones; the two operators do not separate from each other
+  within either structure.}
+  \label{fig:factorial}
+\end{figure}
+
+\input{generated/tab_e4_cells}
+\input{generated/tab_e4_effects}
+
+\subsection{What can be said}
+
+The structure effect is \StructureEffect{} points with a standard deviation
+of \StructureStd{} across seeds---about eleven times its own spread, and the
+same size in every seed. This is the one quantity in the experiment that can
+be quoted on its own. The direction agrees with the decomposition we set out
+to check: most of the difference comes from the structural prior.
+
+\subsection{What cannot}
+
+The interaction is \InteractionEffect{} points with a standard deviation of
+\InteractionStd{}. Its sign is positive in all three seeds, so the direction
+survives; its magnitude varies between seeds by a factor of nearly five, so
+the size does not. The correct statement is that the hierarchical structure
+appears to help the state space operator at least as much as it helps
+attention, in every seed we ran, by an amount this experiment does not
+determine.
+
+The spread has an identifiable source. The flat state space cell in the third
+seed finished more than a point below its other two seeds, and since the
+interaction is $(D-B)-(C-A)$, a low $B$ enters it directly. That cell has the
+largest seed-to-seed standard deviation of the four.
+
+The operator main effect is \OperatorEffect{} points with a standard
+deviation of \OperatorStd{}---two thirds of the effect itself. We do not
+quote its size either. What the experiment supports is weaker and still worth
+saying: at this sequence length the choice of token-mixing operator matters
+far less than the choice of structure.
+
+\subsection{A registered prediction that failed, and what we did about it}
+
+We registered a sanity band of 45 to 60 percent top-1 for all four cells
+before running. Both hierarchical cells finished above it.
+
+Exceeding a sanity bound from above is not self-evidently benign, so we
+checked the pipeline rather than assuming. Two things rule out a defect.
+All four cells draw from the same data loader, and both flat cells sit
+inside the band---a label leak or a mapping error would lift all four
+together. And the validation split itself was inspected directly: two
+hundred classes, ten thousand images, exactly fifty per class, labels
+covering the full range, and an evaluation transform with no augmentation,
+reading from a directory disjoint from the training data.
+
+The band was simply set too low for the hierarchical cells. We report the
+prediction as registered and as missed; the pre-registration table was not
+edited.
+
+\subsection{An interaction that accuracy does not show and cost does}
+
+Adding the hierarchy costs attention a little time and saves the state space
+operator a great deal of it. Cell A trains in \HoursA{} hours and cell C in
+\HoursC{}; cell B trains in \HoursB{} hours and cell D in \HoursD{}. The
+attention model gets about seven percent slower, and the state space model
+runs in a little over half the time.
+
+The mechanism is the sequence length. In the hierarchical body the token
+count halves at each stage, so the scan---whose cost is linear in sequence
+length and carries a large constant---shortens stage by stage. Attention at
+sixty-four tokens was already inexpensive, so the hierarchy buys it nothing
+and the convolutional stem and local perception units cost it a little.
+
+In accuracy the interaction between structure and operator is small and its
+size undetermined. In wall-clock cost the interaction is unambiguous and
+large. This was not in the pre-registration table, which concerned accuracy
+only, and we report it as an observation made after the fact.
+
+\subsection{Residual asymmetries}
+
+Two differences between the cells are not eliminated by the parameter budget
+and could in principle enter the effects.
+
+The first is a normalisation and precision asymmetry that follows from how D
+is built. Inheriting C's skeleton gives D's blocks layer normalisation with
+residuals in half precision, whereas the flat state space cell B is
+constructed as its authors intended, with RMS normalisation, a fused
+add-norm, and residuals kept in single precision for numerical stability.
+So $A \to C$ is layer norm to layer norm, while $B \to D$ is RMS norm with
+fp32 residuals to layer norm with fp16 residuals. The two manipulations
+differ in a way the factor names do not capture, and the difference lands on
+the interaction term. It cannot be removed in code without D ceasing to share
+C's skeleton, which would cost more than it buys; we record it rather than
+claim it is absent.
+
+The second concerns weight decay, and is described in Appendix~\ref{app:hvim}.
+It falls mainly on the operator axis, and its cancellation is approximate
+rather than exact.
+
+Neither is large enough to explain the structure effect, which is an order of
+magnitude above both. Both are the right size to matter for the interaction
+term, which is a further reason we report its sign and not its size.

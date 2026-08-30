@@ -360,6 +360,15 @@ def macros():
     diff, z = _e3_tall_wide(condition="random_init")
     lines.append(_macro("VimTallWideRandom", f"{diff:+.4f}"))
     lines.append(_macro("VimTallWideRandomZ", f"{z:+.2f}"))
+    # 파라미터 예산은 측정값이 아니라 사전 등록한 설계 상수다. 그래도 손으로
+    # 쓰지 않는 이유는 같다 - 탐색 코드가 쓰는 값과 논문이 말하는 값이 갈라지면
+    # "네 칸 모두 대역 안"이라는 판정이 무의미해진다.
+    from experiments.e4_widths import PARAM_TARGET, PARAM_TOLERANCE
+
+    lines += [
+        _macro("ParamBudget", f"{PARAM_TARGET / 1e6:.2f}"),
+        _macro("ParamTolerance", f"{PARAM_TOLERANCE * 100:.0f}"),
+    ]
     env = shared_environment()
     lines += [
         _macro("PyVersion", env["python"]),
