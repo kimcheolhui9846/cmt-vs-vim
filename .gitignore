@@ -5,11 +5,17 @@ __pycache__/
 venv/
 *.egg-info/
 
-# 체크포인트와 데이터셋 — 용량이 커서 추적하지 않는다
+# 체크포인트와 데이터셋 — 용량이 커서 추적하지 않는다.
+# E4가 만드는 체크포인트(checkpoints/e4_*.pt)는 이미 *.pt 규칙에 걸리지만,
+# save_checkpoint가 원자적 교체 전에 쓰는 checkpoints/e4_*.tmp는 어느 확장자
+# 규칙에도 걸리지 않는다 — 통짜로 막아 둔다.
 checkpoints/
 data/*
 !data/__init__.py
 !data/voc.py
+!data/tiny_imagenet.py
+data/tiny-imagenet-200/
+data/tiny-imagenet-200.zip
 *.pth
 *.pt
 *.safetensors
@@ -22,6 +28,11 @@ wandb/
 # results/ 의 원시 측정값은 재현성을 위해 커밋한다.
 # 다만 중간 산출 텐서 덤프는 제외한다.
 results/**/*.npy
+# runs.csv를 원자적으로 쓰는 동안만 존재하는 파일. 쓰다 죽으면 남을 수 있다.
+results/**/*.tmp
+# 캠페인 런처가 남기는 실행 중 프로세스 id. 측정값이 아니라 그 실행만의 흔적이고,
+# 커밋되면 다음 사람이 죽은 pid를 살아 있는 것으로 읽는다.
+results/**/*.pid
 results/**/*.npz
 
 # ERF map은 중간 덤프가 아니라 E2의 1차 측정값이다. 그림이 커밋된 데이터에서

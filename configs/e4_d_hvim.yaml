@@ -1,0 +1,7 @@
+# Hierarchical Vim. 격자와 depths는 C와 같고, 폭은 예산에 맞춰 따로 정한다
+# (Mamba 블록과 LMHSA 블록의 파라미터 수가 다르기 때문이다).
+# base=44 (C의 base=50과 다름 — 정상)가 탐색이 고른 값 — 6,993,856개(6.99M), 목표 대비 +1.95%.
+cell: d_hvim
+embed_dims: [44, 88, 176, 352]
+depths: [2, 10, 2, 2]
+stem_channel: 16
