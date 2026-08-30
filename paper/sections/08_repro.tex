@@ -1,0 +1,38 @@
+\section*{Reproducibility}
+
+Every number in this paper comes from measurement files committed alongside
+the code that produced them, and the manuscript is built from those files
+rather than from transcribed values. The repository will be released under
+the terms confirmed with the venue of the earlier version; see the footnote
+in Section~\ref{sec:intro}.
+
+The four experiments are run as follows, each through the wrapper that
+enforces the pinned environment and exits non-zero if it is not present:
+
+\begin{verbatim}
+  bash tools/run.sh python -m experiments.e1_resolution_sweep
+  bash tools/run.sh python -m experiments.e2_erf
+  bash tools/run.sh python -m experiments.e3_coverage
+  bash tools/run_e4.sh
+\end{verbatim}
+
+The first three are minutes to hours. The fourth is not: it launches twelve
+training runs of three hundred epochs each and takes \HoursTotal{} GPU-hours,
+about four days on the single device described in
+Section~\ref{sec:protocol}. It writes a checkpoint every epoch and the same
+command resumes an interrupted campaign, which we exercised twice. We state
+the cost because a reproducibility claim that omits it is not one.
+
+The tables, macros, figures, and PDF of this paper are regenerated from the
+committed measurement files by:
+
+\begin{verbatim}
+  bash tools/run.sh python -m paper.make_tables
+  bash tools/run.sh python -m paper.make_figures
+  bash tools/latex.sh
+\end{verbatim}
+
+The test suite fails if a regenerated table differs from the committed one,
+if the four experiments disagree about the environment they ran in, or if a
+number that looks like a measurement appears in the prose without coming
+from a macro.

@@ -9,7 +9,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from figures import style as figstyle
 import pandas as pd
+
+FIGSIZE = {"repo": (14.0, 10.0), "paper": (7.0, 5.0)}
 
 from bench.coverage import (
     AREA_BINS,
@@ -153,7 +157,8 @@ def _draw_aspect(ax, summary: pd.DataFrame, title: str) -> None:
     ax.legend(fontsize=8)
 
 
-def plot_dilution(csv_path: Path | str, out_path: Path | str) -> Path:
+def plot_dilution(csv_path: Path | str, out_path: Path | str,
+                  style: str = "repo") -> Path:
     df = pd.read_csv(csv_path)
     if df.empty:
         raise ValueError(f"{csv_path}가 비어 있다 — 먼저 실험을 실행할 것")
@@ -165,7 +170,8 @@ def plot_dilution(csv_path: Path | str, out_path: Path | str) -> Path:
     if kept.empty:
         raise ValueError(f"{csv_path}에 세 모델 모두 측정한 인스턴스가 없다")
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE[figstyle.check(style)],
+                             constrained_layout=True)
 
     for column, condition in enumerate(("pretrained", "random_init")):
         cell = kept[kept["condition"] == condition]
@@ -186,7 +192,7 @@ def plot_dilution(csv_path: Path | str, out_path: Path | str) -> Path:
         )
 
     out_path = Path(out_path)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=figstyle.dpi(style))
     plt.close(fig)
     return out_path
 

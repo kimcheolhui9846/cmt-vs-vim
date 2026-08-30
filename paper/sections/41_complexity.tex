@@ -1,0 +1,107 @@
+\section{Complexity: the cross-over is where it was predicted, the advantage is not the size that was claimed}
+\label{sec:complexity}
+
+Three claims are usually made together about the efficiency of state space
+vision backbones: that a cross-over exists beyond which they are cheaper than
+self-attention, that the advantage past that point is large, and that it
+translates into throughput and memory at high resolution. They are separable,
+and measurement separates them.
+
+\begin{figure}[tbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig1_complexity.pdf}
+  \caption{Measured FLOPs and throughput against input resolution for the
+  three whole models. In the FLOPs panel Vim-S sits above DeiT-S at
+  $224^2$ and $384^2$ and below it from $512^2$ on: the cross-over falls in
+  the interval the analysis predicts. Cells labelled \emph{n/a} in the
+  throughput panel were not measured---the maximum-batch search exhausted
+  memory---and the connecting line spans them.}
+  \label{fig:complexity}
+\end{figure}
+
+\input{generated/tab_e1_sweep}
+
+\subsection{The cross-over point is confirmed}
+
+The analytical argument places the cross-over where the quadratic term of
+self-attention overtakes its linear term, at a token count of roughly twice
+the channel width. For the widths used here that is on the order of several
+hundred tokens, which falls between the $384^2$ and $512^2$ inputs of our
+sweep.
+
+Table~\ref{tab:e1} puts it there. At $384^2$ Vim-S costs more total FLOPs
+than DeiT-S; at $512^2$ it costs less, and the gap widens with resolution.
+The prediction was made about a term in an expression and it survives being
+checked against whole measured models, which is not guaranteed---the
+expression describes one block, and a model is not one block.
+
+\subsection{The size of the advantage does not survive}
+
+The comparison table that accompanies this claim in the literature we are
+auditing reports a ratio of more than fifty to one at a large token count.
+Measured end to end, at $1024^2$, Vim-S costs \VimFlopsHigh~GFLOPs against
+DeiT-S at \DeitFlopsHigh~GFLOPs. That is a factor of two.
+
+The discrepancy is not noise, and it is not a different model. It comes from
+an asymmetry in what was counted, which we take up in
+Section~\ref{sec:discussion}: the self-attention figure includes the
+projection terms that scale with the square of the channel width, and the
+state space figure counts only the scan. A Mamba block also has input,
+output, and parameter projections of that order, and once they are included
+the fifty-fold gap becomes a two-fold one.
+
+There is a second reason to distrust the common way of producing these
+numbers, and it points the same direction. Automatic FLOP counters~\citep{fvcore} attribute
+zero cost to fused kernels they cannot trace into. In this repository that
+happened twice: a fused attention kernel swallowed the attention matrix
+multiplications of DeiT, and a fused selective-scan kernel swallowed the
+convolution, the projections, and the scan of Vim. Both models are
+undercounted by the naive procedure, but the state space model is undercounted
+far more, because more of its arithmetic lives inside one fused call. A
+measurement taken without that care makes SSMs look cheaper than they are.
+We therefore un-fuse the kernels while counting, which is legitimate because
+fusion changes the kernel boundary and not the arithmetic, and we never
+measure latency, memory, or throughput in that mode, where fusion is the
+performance.
+
+\subsection{The throughput and memory claims do not reproduce here}
+
+The efficiency figures most often quoted for Vim---roughly a threefold
+throughput advantage and a large reduction in memory at high
+resolution---were reported at a larger input than our sweep reaches and on
+different hardware. We do not reproduce them at $1024^2$ on an
+\GpuName{}. Vim-S runs at \VimImgsHigh~images per second against DeiT-S at
+\DeitImgsHigh{}, a ratio well below the reported one, and its peak allocated
+memory is \VimPeakHigh~MiB against \DeitPeakHigh~MiB---higher, not lower.
+The same ordering appears in how many images fit at once:
+\VimMaxBatchHigh{} for Vim-S against \DeitMaxBatchHigh{} for DeiT-S.
+
+This is a failure to reproduce under stated conditions, not a refutation.
+The conditions differ in resolution, in device, and in memory budget, and any
+of those could account for the gap. What does not depend on the comparison
+with the original report is the direction we measure: at this resolution, on
+this device, at batch size one, the state space model is the one that runs
+out of memory first. The intuition that a linear-time sequence operator is
+also the memory-frugal choice does not hold here, because the scan's
+intermediate activations have to be kept.
+
+\subsection{A cost that the claims do not mention}
+
+CMT-S is not resolution-scalable in parameter count. It grows from
+\CmtParamsLow~M at $224^2$ to \CmtParamsHigh~M at $1024^2$, because its
+relative position bias tables are sized by the token grid. Over the same
+range DeiT-S and Vim-S grow by about one and one and a half million
+parameters respectively. Any high-resolution comparison that treats CMT as a
+fixed-size model is comparing something else.
+
+\subsection{What not to quote from this table}
+
+Latency at $224^2$ and $384^2$ should not be cited as a single number. Within
+one process the three repeated measurement blocks agree to within a factor of
+\LatencySpreadHigh{}, but the same cell measured in two independent runs of
+the whole sweep differed by a factor of \LatencyBetweenRunSpread{}. The
+uncertainty lives at the process boundary, which repetition inside a process
+cannot see. At $768^2$ and above both spreads fall within a few percent and
+single values are safe to quote. The two independent sweeps are both in the
+repository's history, so this spread can be recomputed rather than taken on
+trust.

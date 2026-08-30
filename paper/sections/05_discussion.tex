@@ -1,0 +1,104 @@
+\section{Discussion: what the discrepancies have in common}
+\label{sec:discussion}
+
+Four of the six claims did not survive measurement, and it would be possible
+to stop there and call the result a list of corrections. That is the least
+useful reading available. In three of the four the underlying argument is
+sound; what fails is the step from the argument to the quantity reported
+beside it. This section makes that step explicit, because it is the part that
+generalises past the two architectures at hand.
+
+\subsection{The counting asymmetry, worked out}
+
+Section~\ref{sec:complexity} deferred the reason a fifty-fold ratio measures
+as a two-fold one. It can be recovered from the reported figure itself.
+
+Write $M$ for the token count, $d$ for the channel width, and $N$ for the
+state width of a selective scan. The self-attention figure that appears in
+these comparisons is the whole block: the quadratic term $2M^2d$ for the
+attention matrices, plus projection terms of order $4Md^2$ for the queries,
+keys, values, and output. The state space figure set beside it is $8MDN$ per
+scan direction, with $D$ the expanded inner width. That is the scan kernel
+and nothing else.
+
+But a selective scan block is not a scan. It has an input projection, an
+output projection, and two further projections that produce its
+input-dependent parameters, and all of these scale as $Md^2$ exactly as
+attention's do. At the operating point of the table in question they are an
+order of magnitude larger than the scan term they surround, because $N$ is a
+few tens while $d$ is a few hundreds. One side of the comparison counted its
+projections and the other did not.
+
+Counting both sides whole, on the same models and the same device, gives the
+ratio in Table~\ref{tab:e1}. The cross-over survives the correction; only its
+size does not.
+
+\subsection{A claim can be true on one axis and measured on another}
+
+Put three of the discrepancies side by side and they have the same shape.
+
+The complexity argument---linear in tokens against quadratic---is true of the
+scan kernel, and the number quoted from it was read as though it were true of
+the block. The anisotropy claim is true of the field near its peak, where the
+scan geometry acts, and the covariance index that was used to test it is
+dominated by the broad skirt. The dilution argument is true of
+normalisation, and the quantity it was taken to predict, how much attribution
+lands on the object, depends also on the width of the recurrent state and on
+whether the object's tokens are contiguous in the scan.
+
+In none of the three would ``the claim is false'' be right, and in none of
+them would ``the claim is true'' be honest. The accurate statement names the
+axis: the claim holds on the axis its argument is about, and the measurement
+was taken on a different one. Our verdicts are phrased that way for this
+reason, and not to be diplomatic.
+
+The fourth discrepancy is a different kind and we keep it separate. The
+throughput and memory figures are a scope mismatch rather than an axis
+mismatch: same quantity, different resolution, different device, different
+memory budget. The two call for different repairs. An axis mismatch is
+repaired by restating the claim; a scope mismatch is repaired by widening the
+measurement, which we have not done and do not claim to have done.
+
+\subsection{Accuracy and cost do not tell the same story}
+
+The factorial experiment leaves the accuracy interaction undetermined in size
+and clear in sign. Had we summarised the experiment on the accuracy axis
+alone---as architecture comparisons ordinarily are summarised---the honest
+report would have been that structure and operator barely interact. The
+largest interaction in the experiment would have gone unmentioned, because it
+is in wall-clock cost and not in top-1.
+
+This is worth stating as more than an anecdote. The two axes are not
+redundant, and which one a comparison is summarised on is a choice that
+changes its conclusion.
+
+Two limits on what the experiment separates should be read alongside it. Our
+\emph{structure} factor bundles hierarchical downsampling with convolutional
+locality, and nothing here says which of the two carries the effect;
+separating them is a $2 \times 2 \times 2$ design and three times the
+compute. And at sixty-four tokens neither operator is under the pressure that
+distinguishes them---the sequence is short enough that the choice of mixer has
+little room to matter, which is itself one of the findings and not a defect of
+the design.
+
+\subsection{What pre-registration and tooling did here}
+
+Two registered predictions failed, in Section~\ref{sec:dilution} and
+Section~\ref{sec:factorial}, and both failures produced something. The first
+sent us to check whether the finding depended on the scale it was measured
+on; it did, which is why we report the result at the level rather than as a
+slope. The second sent us to inspect the validation split rather than accept
+a pleasant number. Neither check would have been prompted if the predictions
+had been written after the measurements, and both changed what we report.
+
+The fused-kernel undercount described in Section~\ref{sec:complexity} is the
+tooling counterpart of the same discipline. It matters beyond this paper
+because it is not symmetric: the most convenient way to produce a FLOP
+comparison between these two families understates both models and understates
+the state space model considerably more, and nothing in the output says so.
+A number that is wrong in a known direction is more dangerous than one that
+is merely noisy.
+
+None of this shows that the arguments in the literature are wrong. It shows
+that the arguments and the numbers printed next to them are, in several
+well-known cases, about different things.

@@ -11,6 +11,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from figures import style as figstyle
+
 ANALYTIC_SHARE_COLUMN = "flops_analytic_share"
 
 LATENCY_BOUNDS = ("latency_min_ms", "latency_max_ms")
@@ -27,6 +29,22 @@ PANELS = [
     ("peak_reserved_bytes", "Peak VRAM (reserved)", 1024**3, "GiB", "log", None),
     (ANALYTIC_SHARE_COLUMN, "Analytic share of FLOPs", 0.01, "%", "linear", None),
 ]
+
+# 논문 그림 1은 cross-over를 보이는 것이 목적이다. 단 너비에 다섯 패널을 넣으면
+# 축 라벨이 읽히지 않으므로 FLOPs와 throughput만 남긴다. 나머지 셋은 저장소용
+# 그림에 그대로 있고 results/e1/README.md가 그 그림을 가리킨다.
+PAPER_PANELS = [
+    ("flops_total", "FLOPs", 1e9, "GFLOPs", "log", None),
+    ("images_per_sec", "Throughput", 1.0, "img/s", "log", None),
+]
+
+FIGSIZE = {"repo": (5 * len(PANELS), 4), "paper": (7.0, 3.0)}
+
+
+def panels_for(style: str):
+    figstyle.check(style)
+    return PANELS if style == "repo" else PAPER_PANELS
+
 
 # 측정되지 않은 셀은 색과 문구로 이유를 말한다. 0으로 그리지 않는다.
 MISSING_STATUSES = {
@@ -132,7 +150,8 @@ def missing_cells(df: pd.DataFrame) -> list[tuple[int, str, str]]:
     ]
 
 
-def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
+def plot_sweep(csv_path: Path | str, out_path: Path | str,
+               style: str = "repo") -> Path:
     try:
         df = pd.read_csv(csv_path)
     except pd.errors.EmptyDataError:
@@ -144,10 +163,11 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
     df = with_analytic_share(df)
 
     out_path = Path(out_path)
-    fig, axes = plt.subplots(1, len(PANELS), figsize=(5 * len(PANELS), 4))
+    panels = panels_for(style)
+    fig, axes = plt.subplots(1, len(panels), figsize=FIGSIZE[style])
     unmeasured = missing_cells(df)
 
-    for ax, (column, title, scale, unit, yscale, bounds) in zip(axes, PANELS):
+    for ax, (column, title, scale, unit, yscale, bounds) in zip(axes, panels):
         series = plotted_series(df, column)
         spans = error_spans(df, *bounds) if bounds else {}
 
@@ -162,6 +182,7 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
             )
 
         _mark_unmeasured(ax, unmeasured)
+        _mark_column_gaps(ax, df, column)
 
         ax.set_xlabel("input resolution (px)")
         ax.set_ylabel(unit)
@@ -178,9 +199,46 @@ def plot_sweep(csv_path: Path | str, out_path: Path | str) -> Path:
             )
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path, dpi=figstyle.dpi(style))
     plt.close(fig)
     return out_path
+
+
+def column_gaps(df: pd.DataFrame, column: str) -> list[tuple[int, str]]:
+    """status가 "ok"인데 이 열만 비어 있는 (해상도, 모델).
+
+    E1의 세 셀이 여기 해당한다 — throughput 탐색만 OOM으로 죽고 나머지 측정은
+    전부 끝난 행이다. status가 "ok"라 missing_cells가 잡지 않는다.
+
+    이것을 그리지 않으면 선이 빈 자리를 가로질러 이어져, 재지 않은 해상도에
+    측정값이 있는 것처럼 보인다. 이 저장소는 측정 실패를 0으로도, 보간으로도
+    그리지 않는다.
+    """
+    if column not in df.columns:
+        return []
+    usable = df[df["status"] == "ok"]
+    values = pd.to_numeric(usable[column], errors="coerce")
+    return [
+        (int(row.resolution), str(row.model))
+        for row, missing in zip(usable.itertuples(), values.isna())
+        if missing
+    ]
+
+
+def _mark_column_gaps(ax, df: pd.DataFrame, column: str) -> None:
+    seen_at: dict[int, int] = {}
+    for resolution, model in column_gaps(df, column):
+        offset = seen_at.get(resolution, 0)
+        seen_at[resolution] = offset + 1
+        ax.annotate(
+            f"{model} n/a",
+            xy=(resolution, 0.05 + 0.09 * offset),
+            xycoords=("data", "axes fraction"),
+            fontsize=6,
+            color="dimgray",
+            ha="center",
+            va="bottom",
+        )
 
 
 def _mark_unmeasured(ax, unmeasured: list[tuple[int, str, str]]) -> None:

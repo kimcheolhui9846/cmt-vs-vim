@@ -10,9 +10,14 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from figures import style as figstyle
 import numpy as np
 import pandas as pd
 from matplotlib.colors import LogNorm
+
+# (폭, 모델 한 행의 높이). 3x4 격자라 행 수에 따라 높이가 늘어난다.
+FIGSIZE = {"repo": (19.0, 4.0), "paper": (7.0, 2.0)}
 
 CONDITIONS = ("natural", "noise", "random_init")
 
@@ -150,7 +155,8 @@ def erf_panel_key(parsed: list[dict], model: str, condition: str) -> str | None:
     return max(candidates, key=lambda p: p["n"])["key"]
 
 
-def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -> Path:
+def plot_erf(csv_path: Path | str, npz_path: Path | str,
+             out_path: Path | str, style: str = "repo") -> Path:
     df = pd.read_csv(csv_path)
     if df.empty:
         raise ValueError(f"{csv_path}가 비어 있다 — 먼저 실험을 실행할 것")
@@ -164,7 +170,9 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
     models = list(dict.fromkeys(metrics["model"]))
     # constrained_layout이어야 컬러바가 히트맵 세 열에서 제 몫의 자리를 받는다.
     # tight_layout으로는 컬러바가 나중에 얹혀 수렴 곡선 패널 위를 덮는다.
-    fig, axes = plt.subplots(len(models), 4, figsize=(19, 4 * len(models)),
+    width, unit_height = FIGSIZE[figstyle.check(style)]
+    fig, axes = plt.subplots(len(models), 4,
+                             figsize=(width, unit_height * len(models)),
                              squeeze=False, constrained_layout=True)
 
     # 아홉 패널이 하나의 눈금을 공유한다. 인스턴스를 한 번만 만들어 전부에
@@ -229,7 +237,7 @@ def plot_erf(csv_path: Path | str, npz_path: Path | str, out_path: Path | str) -
             pad=0.02,
             label="ERF magnitude (per-image peak-normalised, log scale)",
         )
-    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path, dpi=figstyle.dpi(style))
     plt.close(fig)
     return Path(out_path)
 

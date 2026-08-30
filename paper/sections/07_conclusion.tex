@@ -1,0 +1,31 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We measured six quantitative claims that circulate about CNN--transformer
+hybrids and state space vision backbones. The cross-over in computational
+cost is where the analysis says it is. The size of the advantage past it is
+not: counted end to end on whole models it is a factor of two rather than an
+order of magnitude. The reported throughput and memory advantages did not
+reproduce on our hardware, and at batch size one the memory ordering is
+reversed. The receptive field is anisotropic along the scan direction, but
+only on a metric sensitive to the core of the field, and the effect is
+present before any training. The freedom from softmax normalisation does not
+put more attribution on large objects; the state space model places the least
+of the three at every object size we measured. And the accuracy gap does not
+have to be explained by a decomposition borrowed from one architecture: a
+factorial design says the structural prior dominates, that the choice of
+token-mixing operator matters far less at this sequence length, and that the
+two interact in a direction we can sign but not size.
+
+Four of the six do not hold as stated, and in three of those the argument
+behind the claim is not what fails. What fails is the identification of the
+argument with the number reported beside it---a kernel counted as a block, a
+field's skirt measured for its core, an absent normalisation read as a
+present capacity. The useful output of an audit like this is not a list of
+corrections but the axis on which each claim is true, stated so that the next
+comparison can quote it without repeating the substitution.
+
+What remains open is stated in Section~\ref{sec:limitations}, and the two
+items we would run next are the flat cells at a sequence length past the
+cross-over, and a three-factor design that separates hierarchical
+downsampling from convolutional locality.
