@@ -85,7 +85,7 @@ def _e3_rows():
 
 
 def _table(caption, label, colspec, header, body_rows):
-    lines = [r"\begin{table}[t]", r"\centering",
+    lines = [r"\begin{table}[tbp]", r"\centering",
              rf"\caption{{{caption}}}", rf"\label{{{label}}}",
              rf"\begin{{tabular}}{{{colspec}}}", r"\toprule", header + r" \\",
              r"\midrule"]
@@ -168,6 +168,31 @@ def tab_e4_cells():
     return _table(
         "E4 cell means, Tiny-ImageNet top-1 (\\%), $n=3$ seeds.",
         "tab:e4cells", "lrr", "Cell & Top-1 & Std", body)
+
+
+def tab_e4_runs():
+    """열두 run을 그대로 싣는다.
+
+    본문 표는 칸 평균만 보여 준다. 요인 효과를 독자가 직접 다시 계산하려면
+    run 단위 값이 있어야 하므로 부록에 전부 싣는다.
+    """
+    body = []
+    for row in _e4_rows():
+        body.append(" & ".join([
+            CELL_SUFFIX[row["cell"]],
+            row["seed"],
+            f"{float(row['top1']) * 100:.2f}",
+            f"{float(row['top5']) * 100:.2f}",
+            f"{float(row['params']) / 1e6:.3f}",
+            f"{float(row['hours']):.3f}",
+        ]))
+    return _table(
+        "Every E4 run. Cells are A flat/attention, B flat/SSM, "
+        "C hierarchical/attention, D hierarchical/SSM; all twelve ran "
+        "$300$ epochs to completion under one recipe. The effects in "
+        r"Table~\ref{tab:e4effects} are computed from these rows.",
+        "tab:e4runs", "llrrrr",
+        "Cell & Seed & Top-1 & Top-5 & Params (M) & Hours", body)
 
 
 def tab_e4_effects():
@@ -386,6 +411,7 @@ BUILDERS = {
     "tab_e3_excess.tex": tab_e3_excess,
     "tab_e4_cells.tex": tab_e4_cells,
     "tab_e4_effects.tex": tab_e4_effects,
+    "tab_e4_runs.tex": tab_e4_runs,
     "macros.tex": macros,
 }
 

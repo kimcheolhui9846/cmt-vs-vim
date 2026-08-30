@@ -17,6 +17,7 @@ EXPECTED_FILES = {
     "tab_e3_excess.tex",
     "tab_e4_cells.tex",
     "tab_e4_effects.tex",
+    "tab_e4_runs.tex",
 }
 
 
@@ -34,6 +35,20 @@ def generated(tmp_path_factory):
 
 def test_build_writes_every_expected_file(generated):
     assert {p.name for p in generated.iterdir()} == EXPECTED_FILES
+
+
+def test_e4_runs_table_holds_every_run(generated):
+    """부록의 run 표가 CSV의 열두 줄을 빠짐없이, 같은 값으로 싣는지 본다."""
+    rows = _rows("results/e4/runs.csv")
+    text = (generated / "tab_e4_runs.tex").read_text(encoding="utf-8")
+    body = [line for line in text.splitlines()
+            if " & " in line and not line.startswith("Cell")]
+    assert len(body) == len(rows) == 12
+    for row in rows:
+        top1 = f"{float(row['top1']) * 100:.2f}"
+        hours = f"{float(row['hours']):.3f}"
+        assert any(top1 in line and hours in line for line in body), (
+            f"{row['cell']} seed {row['seed']} 이 표에 없다")
 
 
 def test_e4_effects_table_matches_factorial_module(generated):

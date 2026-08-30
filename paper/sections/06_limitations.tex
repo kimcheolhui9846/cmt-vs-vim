@@ -1,0 +1,43 @@
+\section{Limitations}
+\label{sec:limitations}
+
+The factorial experiment trains on Tiny-ImageNet: two hundred classes at
+$64 \times 64$, three seeds per cell. Nothing here shows that the structure
+effect keeps its size at ImageNet scale and full resolution, and the
+literature it speaks to was measured there. What the experiment does support
+is a comparison among four models trained identically, which is what a
+transferred ablation table does not provide at any scale.
+
+The resolution is not neutral between the two operators. Sixty-four tokens is
+short enough that the quadratic term of attention is not yet expensive, which
+is the regime least favourable to a linear-time scan---as
+Section~\ref{sec:complexity} measures directly, the cross-over is several
+hundred tokens away. Running the flat cells at $256$ tokens would put the
+comparison on the other side of it. We priced it: about three hundred and
+twelve GPU-hours for the twelve runs, against the \HoursTotal{} the present
+campaign took. It is the single most valuable measurement not in this paper.
+
+Our structure factor bundles two changes that could be separated. Hierarchical
+downsampling and convolutional locality arrive together in cells C and D, and
+no measurement here says which of them carries the effect. Separating them is
+a $2\times2\times2$ design at twenty-four runs.
+
+Every measurement comes from one consumer GPU with eight gibibytes of memory.
+The throughput and memory claims we could not reproduce were reported at a
+higher resolution on different hardware, and our failure to reproduce them
+cannot be separated from that. We report it as a bound on where the reported
+result has been shown to hold, not as a contradiction of it.
+
+Three cells of the resolution sweep have no throughput value: CMT-S at
+$512^2$ and $1024^2$, and Vim-S at $512^2$. The maximum-batch search
+exhausted memory in those cells while every other measurement in the same run
+completed, so the row's status is recorded as complete and only the
+throughput column is empty; the reason is in the error column of the
+measurement file. Table~\ref{tab:e1} marks the gaps and the figure does not
+draw across them, but a reader recomputing from the file should know that the
+absence is a search failure and not a zero.
+
+Finally, the three architectures expose no structurally identical layer at
+which to probe internal behaviour, which bounds how finely the
+receptive-field and coverage results can be compared across models. We state
+that bound where those results are used rather than only here.

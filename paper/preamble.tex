@@ -6,3 +6,8 @@
 \usepackage[numbers]{natbib}
 \usepackage{caption}
 \graphicspath{{figures/}}
+% float가 본문 뒤로 밀려 부록 뒤에 몰리는 것을 막는다.
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.7}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.75}
