@@ -51,7 +51,13 @@ comparing the two at the same sample size the Vim-S decay ratio moves by
 that reproduces it.
 
 The difference between CMT-S and DeiT-S on this metric is inside that
-uncertainty, and we do not claim an ordering between them.
+uncertainty, and we do not claim an ordering between them. There is a
+second reason not to: the three architectures expose no structurally
+equivalent layer at which to read a feature map, so each is probed at the
+point closest in role rather than in position, and re-reading DeiT-S at an
+alternative point moves its anisotropy index by a small but non-negligible
+amount. Section~\ref{sec:dilution} shows the same substitution having a
+much larger effect, and states what it does and does not disturb.
 
 \subsection{The clearest evidence comes from a model that has learned nothing}
 

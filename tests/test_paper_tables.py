@@ -4,6 +4,7 @@
 E4 README에서 손으로 한 대조를 자동화한 것이다.
 """
 import csv
+from pathlib import Path
 
 import pytest
 
@@ -177,3 +178,20 @@ def test_between_run_latency_spread_uses_the_committed_run_a():
     assert cell == ("vim_s", "224")
     assert ratio > make_tables._latency_spread(), (
         "실행 사이 변동이 실행 안 변동보다 작다면 이 절의 주장이 무너진다")
+
+
+def test_committed_figures_carry_a_pinned_creation_date():
+    """논문 그림이 고정된 시각으로 만들어졌는지 본다.
+
+    matplotlib은 기본적으로 PDF에 생성 시각을 박는다. 그러면 그림을 다시
+    만들 때마다 네 파일이 바뀐 것으로 보이고, "생성물을 다시 만들어도
+    워킹트리가 깨끗한가"라는 검사가 늘 실패해 아무 신호도 주지 못한다.
+    paper/make_figures.py가 SOURCE_DATE_EPOCH를 고정하며, 이 테스트는
+    그 장치를 거치지 않고 만든 그림이 커밋되는 것을 막는다.
+    """
+    figures = sorted(Path("paper/figures").glob("*.pdf"))
+    assert len(figures) == 4, f"논문 그림이 넷이 아니다: {figures}"
+    for path in figures:
+        assert b"D:19700101000000Z" in path.read_bytes(), (
+            f"{path}: 고정되지 않은 생성 시각이 박혀 있다. "
+            f"paper/make_figures.py를 거쳐 다시 만들 것")

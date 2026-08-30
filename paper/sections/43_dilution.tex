@@ -59,6 +59,27 @@ instead, where no such choice is available: at every object size measured,
 the state space model puts less attribution on the object than either
 attention model.
 
+\subsection{What the choice of probe point does and does not disturb}
+
+The three architectures expose no structurally equivalent layer at which to
+read a feature map. We probe DeiT-S before its final normalisation, Vim-S
+after its own, and CMT-S after an activation in its head, choosing the point
+closest in role rather than in position. The choice is not neutral: measured
+at an alternative point, DeiT-S loses enough coverage to halve its distance
+from CMT-S.
+
+We therefore make no claim anywhere in this paper about the ordering of the
+two attention models on this measurement. The finding we do state survives
+the substitution---at the alternative point DeiT-S still sits above Vim-S,
+and the comparison between Vim-S and CMT-S does not involve the DeiT probe at
+all---with one qualification we state rather than paper over. That check was
+made on the overall mean at a smaller sample, and was not repeated bin by
+bin. The statement that Vim-S is lowest \emph{in every bin} rests on the
+primary probe point; the statement that it is lowest overall does not.
+
+The aspect-ratio comparison below is unaffected by any of this, because it
+compares a model against itself.
+
 \subsection{Why the argument does not reach the conclusion}
 
 The dilution argument establishes that a state space model is free of a
