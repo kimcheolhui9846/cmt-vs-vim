@@ -114,3 +114,39 @@ def test_committed_generated_files_match_the_csvs(tmp_path):
         assert stored == fresh, (
             f"paper/generated/{name} 가 CSV와 어긋난다. "
             f"`python -m paper.make_tables`를 다시 돌릴 것.")
+
+
+def test_the_four_experiments_share_one_environment():
+    """논문 3절이 "하나의 고정 환경"을 주장한다. 그것이 참인지 본다.
+
+    네 실험이 서로 다른 toolchain에서 나왔다면 그 주장은 거짓이고, 손으로 쓴
+    버전 문자열로는 그 사실이 드러나지 않는다.
+    """
+    env = make_tables.shared_environment()
+    assert set(env) == set(make_tables.ENV_KEYS)
+    assert all(env.values()), f"빈 값이 있다: {env}"
+
+
+def test_environment_mismatch_is_refused(tmp_path, monkeypatch):
+    """한 실험만 다른 환경이면 매크로를 만들지 않고 죽어야 한다."""
+    import json
+    import shutil
+
+    root = tmp_path / "results"
+    for name in make_tables.EXPERIMENTS:
+        (root / name).mkdir(parents=True)
+        shutil.copy(f"results/{name}/env.json", root / name / "env.json")
+    tampered = json.loads((root / "e2" / "env.json").read_text(encoding="utf-8"))
+    tampered["torch"] = "2.9.9+cu999"
+    (root / "e2" / "env.json").write_text(json.dumps(tampered), encoding="utf-8")
+
+    monkeypatch.setattr(make_tables, "RESULTS", root)
+    with pytest.raises(ValueError, match="torch"):
+        make_tables.shared_environment()
+
+
+def test_macros_carry_the_environment(generated):
+    text = (generated / "macros.tex").read_text(encoding="utf-8")
+    for name in ("PyVersion", "TorchVersion", "CudaVersion", "GpuName",
+                 "DriverVersion"):
+        assert rf"\newcommand{{\{name}}}" in text

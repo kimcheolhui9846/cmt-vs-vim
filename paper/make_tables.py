@@ -8,6 +8,7 @@
 아무 표시가 남지 않는다.
 """
 import csv
+import json
 import math
 import statistics
 from pathlib import Path
@@ -31,6 +32,33 @@ EFFECT_LABEL = {
 AREA_BINS = ("<2%", "2-5%", "5-10%", "10-20%", "20-40%", ">=40%")
 MODELS = ("deit_s", "cmt_s", "vim_s")
 MODEL_LABEL = {"deit_s": "DeiT-S", "cmt_s": "CMT-S", "vim_s": "Vim-S"}
+
+
+# 논문 §3이 "하나의 고정 환경"을 주장한다. 네 실험이 실제로 같은 환경에서
+# 나왔는지 여기서 확인하고, 다르면 매크로를 만들지 않고 죽는다. 손으로 쓴
+# 버전 문자열은 환경이 바뀌어도 조용히 옛 값으로 남는다.
+ENV_KEYS = ("python", "torch", "cuda", "gpu", "driver")
+EXPERIMENTS = ("e1", "e2", "e3", "e4")
+
+
+def shared_environment():
+    """네 실험의 env.json이 합의하는 환경. 어긋나면 ValueError."""
+    envs = {}
+    for name in EXPERIMENTS:
+        path = RESULTS / name / "env.json"
+        envs[name] = json.loads(path.read_text(encoding="utf-8"))
+
+    common = {}
+    for key in ENV_KEYS:
+        values = {name: env.get(key) for name, env in envs.items()}
+        distinct = set(values.values())
+        if len(distinct) != 1:
+            raise ValueError(
+                f"env.json의 '{key}'가 실험마다 다르다: {values}. "
+                f"논문 3절은 하나의 고정 환경을 주장하므로 이대로 쓸 수 없다."
+            )
+        common[key] = distinct.pop()
+    return common
 
 
 def _read(path):
@@ -242,6 +270,14 @@ def macros():
                f"{float(e2[('vim_s', 'random_init')]['decay_ratio']):.2f}"),
         _macro("VimTallWide", f"{tall_wide:+.4f}"),
         _macro("VimTallWideZ", f"{tall_wide_z:+.2f}"),
+    ]
+    env = shared_environment()
+    lines += [
+        _macro("PyVersion", env["python"]),
+        _macro("TorchVersion", env["torch"]),
+        _macro("CudaVersion", env["cuda"]),
+        _macro("GpuName", env["gpu"]),
+        _macro("DriverVersion", env["driver"]),
     ]
     return "\n".join(lines) + "\n"
 

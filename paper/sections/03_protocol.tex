@@ -1,0 +1,84 @@
+\section{Measurement protocol}
+\label{sec:protocol}
+
+The claims we examine are quantitative, and several of them differ from what
+we measure by amounts smaller than the run-to-run spread of a careless
+experiment. What follows is therefore not boilerplate: each of the three
+commitments below closes a specific way in which a number can be wrong without
+anyone noticing.
+
+\subsection{A pinned environment that refuses to be substituted}
+
+Every measurement in this paper comes from one toolchain: Python
+\PyVersion{}, PyTorch \TorchVersion{}, CUDA \CudaVersion{}, on an
+\GpuName{} with driver \DriverVersion{}.
+
+The pin is enforced rather than documented. Every Python process in the
+repository is launched through a wrapper that inspects the interpreter and
+its versions and exits non-zero when they do not match, so a measurement
+cannot silently fall back to a different interpreter. This matters more for
+state space models than for transformers: the selective scan runs an order of
+magnitude slower without its compiled CUDA kernel, and a latency number
+produced by that fallback looks like a result rather than a mistake.
+
+The four experiments record their environment independently at run time, and
+a test asserts that the four records agree on interpreter, framework, CUDA,
+device, and driver. The sentence "one pinned environment" in the previous
+paragraph is therefore checked rather than asserted; if any experiment were
+re-run elsewhere, the build of this paper would fail instead of quietly
+printing a version string that no longer describes the data.
+
+\subsection{Numbers that cannot be typed by hand}
+
+Every measurement in this paper is generated from the comma-separated files
+committed alongside the code. Tables are emitted by a script that reads those
+files; quantities that appear in running prose are emitted by the same script
+as macros and referenced by name. The factorial effects in
+Section~\ref{sec:factorial} are computed by calling the repository's own
+analysis module, not by a second implementation written for the manuscript.
+
+A test then reads every section source and fails if it finds a number that
+looks like a measurement---two or more decimal places, or a percentage---that
+is not one of a small set of explicitly justified exceptions. The exceptions
+are values quoted from other papers, which are not ours to regenerate and are
+attributed where they appear.
+
+This is stricter than it may seem necessary. Transcription is exactly the
+kind of error that survives proofreading, because a wrong digit is still a
+plausible digit. The rule also removes a subtler failure: when a measurement
+is repeated and the data changes, hand-written prose keeps the old value, and
+nothing in the document indicates that it has gone stale.
+
+\subsection{Predictions fixed before measurement}
+
+Each experiment registered its predictions in a design document committed
+before the corresponding measurement ran, and those predictions were not
+edited afterwards.
+
+Two of them did not survive contact with the data. The prediction about how
+sharply object coverage degrades with object size turned out to depend on
+the scale used to measure the degradation, and we describe in
+Section~\ref{sec:dilution} why we moved the verdict to a scale-independent
+statement rather than declaring the prediction met. The sanity band we
+registered for the four training cells was exceeded from above by both
+hierarchical cells, and Section~\ref{sec:factorial} reports what we did to
+establish that the cause was not a defect in the pipeline.
+
+We report both because this paper's thesis is that quantitative claims in
+this area circulate without independent measurement. An argument of that
+shape is worth very little from authors who filter their own results, and a
+reader has no way to distinguish a study that registered three predictions
+and reports three from one that registered five and reports the three that
+worked.
+
+\subsection{What the protocol does not buy}
+
+A pinned environment makes a number reproducible; it does not make it
+general. Every measurement here comes from a single consumer GPU with 8~GiB
+of memory, and Section~\ref{sec:complexity} shows one claim whose failure to
+reproduce cannot be separated from that constraint. The training experiment
+uses one small dataset at low resolution. And the three architectures do not
+expose a structurally identical point at which to probe internal behaviour,
+which bounds how finely the receptive-field and coverage comparisons in
+Sections~\ref{sec:erf} and~\ref{sec:dilution} can be read; we state that
+bound where those results are used rather than only in the limitations.
