@@ -9,7 +9,11 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
+
+from figures import style as figstyle  # noqa: E402
+
+FIGSIZE = {"repo": (13.0, 5.0), "paper": (7.0, 2.8)}
 
 from bench.factorial import (  # noqa: E402
     CELLS,
@@ -95,12 +99,13 @@ def bar_title(complete_seeds: int) -> str:
     )
 
 
-def plot_e4(runs_csv, curves_dir, out_path) -> Path:
+def plot_e4(runs_csv, curves_dir, out_path, style: str = "repo") -> Path:
     rows = _read(runs_csv)
     means = cell_means(rows)
     effects = summarize(rows)
 
-    fig, (bar_ax, curve_ax) = plt.subplots(1, 2, figsize=(13, 5))
+    fig, (bar_ax, curve_ax) = plt.subplots(
+        1, 2, figsize=FIGSIZE[figstyle.check(style)])
 
     labels = [CELL_LABELS[c] for c in CELLS]
     values = [means[c][0] * 100 for c in CELLS]
@@ -142,7 +147,7 @@ def plot_e4(runs_csv, curves_dir, out_path) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=figstyle.dpi(style))
     plt.close(fig)
     return out
 

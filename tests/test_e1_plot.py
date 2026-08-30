@@ -269,3 +269,49 @@ def test_draws_a_figure_with_latency_bars(tmp_path):
 
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_column_gaps_finds_cells_that_are_ok_but_missing_this_column():
+    """status가 "ok"인데 한 열만 비어 있는 셀을 찾는다.
+
+    E1의 throughput OOM 세 셀이 그렇다. missing_cells는 status로만 판단하므로
+    이 셀들을 잡지 못하고, 잡지 못하면 선이 빈 자리를 가로질러 이어져 재지
+    않은 해상도에 측정값이 있는 것처럼 보인다.
+    """
+    import pandas as pd
+
+    from figures.e1_plot import column_gaps
+
+    df = pd.DataFrame([
+        {"model": "vim_s", "resolution": 512, "status": "ok",
+         "images_per_sec": None},
+        {"model": "vim_s", "resolution": 768, "status": "ok",
+         "images_per_sec": 25.7},
+        {"model": "cmt_s", "resolution": 512, "status": "oom",
+         "images_per_sec": None},
+    ])
+    # status가 ok인 결측만 나온다. oom 행은 missing_cells가 따로 표시한다.
+    assert column_gaps(df, "images_per_sec") == [(512, "vim_s")]
+
+
+def test_column_gaps_is_empty_when_the_column_is_complete():
+    import pandas as pd
+
+    from figures.e1_plot import column_gaps
+
+    df = pd.DataFrame([
+        {"model": "vim_s", "resolution": 512, "status": "ok",
+         "flops_total": 3.0e10},
+    ])
+    assert column_gaps(df, "flops_total") == []
+
+
+def test_column_gaps_matches_the_committed_sweep():
+    """커밋된 CSV에서 실제로 세 셀이 잡히는지 본다."""
+    import pandas as pd
+
+    from figures.e1_plot import column_gaps
+
+    df = pd.read_csv("results/e1/sweep.csv")
+    assert set(column_gaps(df, "images_per_sec")) == {
+        (512, "cmt_s"), (1024, "cmt_s"), (512, "vim_s")}
