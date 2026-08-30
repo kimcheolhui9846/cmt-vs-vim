@@ -208,6 +208,56 @@ def _e3_tall_wide(model="vim_s", condition="pretrained"):
     return diff, diff / se
 
 
+# E1의 sweep은 같은 고정 환경에서 두 번 돌았다. 실행 A는 이 커밋이 커밋했고
+# 실행 B가 지금 results/e1/sweep.csv에 있다. 실행 **사이**의 변동은 두 CSV를
+# 대조해야만 나오므로 옛 판을 git에서 꺼내 읽는다.
+RUN_A_COMMIT = "fa35e51"
+RUN_A_PATH = "results/e1/sweep.csv"
+
+
+def _run_a_rows():
+    """실행 A의 sweep.csv를 git에서 꺼내 읽는다.
+
+    파일로 중복 커밋하지 않는 이유는 이미 이력 안에 있기 때문이다. 해시를
+    박아 두었으므로 결과는 결정적이다.
+    """
+    import io as _io
+    import subprocess
+
+    try:
+        blob = subprocess.run(
+            ["git", "show", f"{RUN_A_COMMIT}:{RUN_A_PATH}"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            f"{RUN_A_COMMIT}:{RUN_A_PATH}를 꺼내지 못했다. 이 저장소의 "
+            f"이력이 있어야 실행 사이 변동을 계산할 수 있다."
+        ) from exc
+    return list(csv.DictReader(_io.StringIO(blob)))
+
+
+def between_run_latency_spread():
+    """두 독립 실행 사이의 latency 최대 비와 그것이 나온 셀.
+
+    한 실행 안의 반복 편차(_latency_spread)와는 다른 양이다. 이 저장소가
+    반복 측정으로 잡으려 한 것은 앞의 것인데, 실제로 크게 갈린 것은 뒤의
+    것이다 - 배치 1 latency의 불확실성은 프로세스 경계에 있다.
+    """
+    run_a = {(r["model"], r["resolution"]): r for r in _run_a_rows()}
+    worst_ratio, worst_cell = 0.0, None
+    for row in _e1_rows():
+        key = (row["model"], row["resolution"])
+        if key not in run_a:
+            continue
+        a = float(run_a[key]["latency_ms"])
+        b = float(row["latency_ms"])
+        ratio = max(a, b) / min(a, b)
+        if ratio > worst_ratio:
+            worst_ratio, worst_cell = ratio, key
+    return worst_ratio, worst_cell
+
+
 def _latency_spread():
     """한 실행 안에서 잰 latency 반복의 최대 비(max/min).
 
@@ -260,6 +310,7 @@ def macros():
         _macro("VimMaxBatchHigh", e1[("vim_s", "1024")]["max_batch"].split(".")[0]),
         _macro("DeitMaxBatchHigh", e1[("deit_s", "1024")]["max_batch"].split(".")[0]),
         _macro("LatencySpreadHigh", f"{_latency_spread():.2f}"),
+        _macro("LatencyBetweenRunSpread", f"{between_run_latency_spread()[0]:.2f}"),
         _macro("VimAnisoRandom",
                f"{float(e2[('vim_s', 'random_init')]['anisotropy']):.3f}"),
         _macro("VimAngleRandom",

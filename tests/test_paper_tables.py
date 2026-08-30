@@ -77,7 +77,7 @@ def test_macros_carry_the_headline_numbers(generated):
     text = (generated / "macros.tex").read_text(encoding="utf-8")
     for name in ("StructureEffect", "InteractionEffect", "VimAngleRandom",
                  "VimTallWideZ", "CmtParamsHigh", "HoursTotal",
-                 "LatencySpreadHigh"):
+                 "LatencySpreadHigh", "LatencyBetweenRunSpread"):
         assert f"\\newcommand{{\\{name}}}" in text
 
 
@@ -150,3 +150,15 @@ def test_macros_carry_the_environment(generated):
     for name in ("PyVersion", "TorchVersion", "CudaVersion", "GpuName",
                  "DriverVersion"):
         assert rf"\newcommand{{\{name}}}" in text
+
+
+def test_between_run_latency_spread_uses_the_committed_run_a():
+    """실행 사이 변동은 두 커밋의 CSV를 대조해야 나온다.
+
+    한 실행 안의 반복 편차와는 다른 양이다. 이 저장소가 반복 측정으로 잡으려
+    한 것은 앞의 것인데 실제로 크게 갈린 것은 뒤의 것이다.
+    """
+    ratio, cell = make_tables.between_run_latency_spread()
+    assert cell == ("vim_s", "224")
+    assert ratio > make_tables._latency_spread(), (
+        "실행 사이 변동이 실행 안 변동보다 작다면 이 절의 주장이 무너진다")
