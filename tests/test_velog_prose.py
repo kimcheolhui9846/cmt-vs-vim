@@ -1,4 +1,4 @@
-"""벨로그 초안의 측정 수치가 커밋된 데이터에서 온 값인지 검사한다.
+r"""벨로그 초안의 측정 수치가 커밋된 데이터에서 온 값인지 검사한다.
 
 논문 검사기(tests/test_paper_prose.py)와 방향이 반대다. 논문은 본문에 손으로
 쓴 숫자가 "없어야" 통과한다 - 수치를 매크로로 부르기 때문이다. 마크다운에는
@@ -8,6 +8,14 @@
 CSV가 바뀌어 매크로가 갱신됐을 때 글이 옛 숫자를 들고 있으면 아무 표시 없이
 조용히 틀린 글이 된다. 이 저장소는 그 실패를 이미 두 번 겪었다 - E1 README의
 1.66배, HANDOFF의 "1.35와 1.40".
+
+SUSPECT 정규식에는 사각지대가 있다 - 숫자처럼 생긴 것만 잡으므로, 매크로 이름이
+값으로 치환되지 않고 `\CellA`처럼 리터럴로 본문에 남은 경우는 잡지 못한다.
+이 저장소에서 실제로 일어났다: 커밋 93c4243이 `` `\CellA` ``·`` `\ParamBudget`M ``
+같은 리터럴을 본문에 담은 채 이 파일의 검사 9건을 전부 통과했고, 사람이 리뷰에서
+발견해 90e4068로 고쳤다. 아래 `macro_leftovers`는 그 사각지대를 메우는 별도
+검사다 - 숫자 검사와 섞지 않고 순수 함수로 분리해, 자기 테스트로 "회귀를 넣으면
+실제로 잡히는가"를 확인한다.
 """
 import re
 from pathlib import Path
@@ -21,6 +29,10 @@ ALLOWLIST = Path("docs/velog/numbers_allowlist.txt")
 SUSPECT = re.compile(
     r"(?<![\d.])\d+\.\d{2,}(?![\d.])|(?<![\d.])\d+(?:\.\d+)?\s*%")
 MACRO = re.compile(r"\\newcommand\{\\(\w+)\}\{([^}]*)\}")
+
+# 값으로 치환되지 않고 남은 리터럴 매크로 흔적: `\CellA`, `\ParamBudget` 같은
+# 백슬래시 + 대문자로 시작하는 낱말. 정상적인 한글 산문에는 나타나지 않는다.
+MACRO_LEFTOVER = re.compile(r"\\[A-Z][A-Za-z]*")
 
 
 def normalise(token):
@@ -71,6 +83,20 @@ def offenders(lines, known):
     return found
 
 
+def macro_leftovers(lines):
+    """치환되지 않고 리터럴로 남은 매크로 흔적을 찾는다.
+
+    `\\CellA`처럼 매크로 이름이 값으로 바뀌지 않은 채 본문에 남으면 SUSPECT는
+    숫자가 아니므로 못 잡는다. 코드 펜스 밖 줄만 받는다는 점은 offenders와
+    같다(prose_lines가 이미 걸러 준다).
+    """
+    found = []
+    for lineno, line in lines:
+        for match in MACRO_LEFTOVER.finditer(line):
+            found.append(f"{lineno}: {match.group(0)!r}")
+    return found
+
+
 def test_draft_exists():
     assert DRAFT.is_file(), f"{DRAFT} 가 없다"
 
@@ -88,6 +114,36 @@ def test_no_unsourced_measurements():
         "초안에 출처 없는 수치가 있다. paper/generated/macros.tex의 값을 쓰거나, "
         "매크로에 없는 정당한 수치라면 docs/velog/numbers_allowlist.txt에 출처와 "
         "함께 추가할 것:\n" + "\n".join(found))
+
+
+def test_no_macro_leftovers():
+    found = macro_leftovers(prose_lines(DRAFT.read_text(encoding="utf-8")))
+    assert not found, (
+        "초안에 치환되지 않은 리터럴 매크로 흔적이 있다 (예: `\\CellA`). "
+        "paper/generated/macros.tex의 실제 값으로 바꿀 것:\n" + "\n".join(found))
+
+
+def test_the_checker_catches_a_macro_leftover():
+    """macro_leftovers가 이름값을 하는지 본다.
+
+    커밋 93c4243은 `\\CellA`% 같은 리터럴을 본문에 남긴 채 test_no_unsourced_
+    measurements를 포함한 검사 9건을 그대로 통과했다. 이 자기 테스트가 없으면
+    MACRO_LEFTOVER 정규식이 아무것도 잡지 못하게 바뀌어도
+    test_no_macro_leftovers가 조용히 통과한다.
+    """
+    macro = "\\CellA"
+    lines = prose_lines("칸 평균 top-1은 A `" + macro + "`%였다.\n")
+    assert macro_leftovers(lines) == ["1: " + repr(macro)]
+
+
+def test_the_checker_accepts_prose_without_macro_leftovers():
+    lines = prose_lines("칸 평균 top-1은 A 54.17%였다.\n")
+    assert macro_leftovers(lines) == []
+
+
+def test_macro_leftover_checker_ignores_fenced_code_blocks():
+    text = "```\n\\CellA\n```\n본문입니다.\n"
+    assert macro_leftovers(prose_lines(text)) == []
 
 
 def test_allowlist_entries_carry_a_source():
